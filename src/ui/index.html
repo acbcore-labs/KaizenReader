@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="sepia">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>KaizenReader — Studio TTS for Apple Silicon M1</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div id="app-container">
+    <!-- Header -->
+    <header class="app-header">
+      <div class="header-left">
+        <button id="toggle-drawer-btn" class="icon-btn" title="Library & Table of Contents (M)">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <line x1="3" y1="12" x2="21" y2="12"></line>
+            <line x1="3" y1="6" x2="21" y2="6"></line>
+            <line x1="3" y1="18" x2="21" y2="18"></line>
+          </svg>
+          <span>Library & TOC</span>
+        </button>
+        <div class="app-brand">
+          <span>KaizenReader</span>
+        </div>
+        <div id="current-book-title" class="book-title-display">Loading library...</div>
+      </div>
+
+      <div class="header-right">
+        <div id="mobile-badge" class="mobile-badge" title="Open this URL on iPhone/iPad on your local Wi-Fi to listen in bed!">
+          <span>📱</span>
+          <span id="mobile-url-text">Loading...</span>
+        </div>
+
+        <!-- Typography controls -->
+        <button id="font-decrease-btn" class="icon-btn" title="Decrease font size">A-</button>
+        <button id="font-increase-btn" class="icon-btn" title="Increase font size">A+</button>
+        
+        <select id="theme-select" class="app-select" title="Color Theme (T)">
+          <option value="sepia">Warm Sepia</option>
+          <option value="light">Clean Light</option>
+          <option value="dark">OLED Dark</option>
+          <option value="eink">E-Ink High Contrast</option>
+        </select>
+      </div>
+    </header>
+
+    <!-- Main Reading Surface -->
+    <main id="reader-main" class="reader-main">
+      <div class="content-container">
+        <div id="reader-content">
+          <!-- Dynamically populated document AST nodes -->
+        </div>
+      </div>
+    </main>
+
+    <!-- Bottom Audio Controller -->
+    <footer class="player-bar">
+      <div class="player-left">
+        <button id="prev-sentence-btn" class="control-btn" title="Previous sentence (Left Arrow)">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <polygon points="19 20 9 12 19 4 19 20"></polygon>
+            <line x1="5" y1="19" x2="5" y2="5"></line>
+          </svg>
+        </button>
+
+        <button id="play-pause-btn" class="play-main-btn" title="Play / Pause (Space)">
+          <svg id="play-icon" width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+            <polygon points="5 3 19 12 5 21 5 3"></polygon>
+          </svg>
+          <svg id="pause-icon" width="20" height="20" viewBox="0 0 24 24" fill="currentColor" style="display:none;">
+            <rect x="6" y="4" width="4" height="16"></rect>
+            <rect x="14" y="4" width="4" height="16"></rect>
+          </svg>
+        </button>
+
+        <button id="next-sentence-btn" class="control-btn" title="Next sentence (Right Arrow)">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <polygon points="5 4 15 12 5 20 5 4"></polygon>
+            <line x1="19" y1="5" x2="19" y2="19"></line>
+          </svg>
+        </button>
+
+        <div class="select-wrapper">
+          <span id="reading-position-indicator" style="font-size:0.8rem; font-family:var(--font-sans);">0 / 0</span>
+        </div>
+      </div>
+
+      <div class="player-center">
+        <!-- Progress bar scrub line -->
+        <div id="progress-bar-container" class="progress-line-container" title="Click to seek within chapter">
+          <div id="progress-bar-fill" class="progress-line-fill"></div>
+        </div>
+      </div>
+
+      <div class="player-right">
+        <!-- Voice selector -->
+        <div class="select-wrapper">
+          <span>Voice:</span>
+          <select id="voice-select" class="app-select">
+            <option value="af_bella">Bella (American Female)</option>
+            <option value="af_sarah">Sarah (American Female)</option>
+            <option value="am_michael">Michael (American Male)</option>
+            <option value="am_adam">Adam (American Male)</option>
+            <option value="bf_emma">Emma (British Female)</option>
+            <option value="bm_george">George (British Male)</option>
+          </select>
+        </div>
+
+        <!-- Speed selector -->
+        <div class="select-wrapper">
+          <span>Speed:</span>
+          <select id="speed-select" class="app-select">
+            <option value="0.75">0.75x</option>
+            <option value="1.0" selected>1.0x</option>
+            <option value="1.25">1.25x</option>
+            <option value="1.5">1.5x</option>
+            <option value="1.75">1.75x</option>
+            <option value="2.0">2.0x</option>
+            <option value="2.5">2.5x</option>
+          </select>
+        </div>
+      </div>
+    </footer>
+
+    <!-- Sidebar Drawer: TOC & Library -->
+    <div id="drawer-overlay" class="drawer-overlay">
+      <aside class="drawer-sidebar">
+        <div class="drawer-header">
+          <span style="font-weight:700;">Library & Contents</span>
+          <button id="close-drawer-btn" class="icon-btn">✕</button>
+        </div>
+
+        <div class="drawer-content">
+          <!-- File Dropzone -->
+          <div id="dropzone" class="dropzone">
+            <p><strong>Drop any file here</strong></p>
+            <p style="font-size:0.75rem; margin-top:0.3rem;">.epub, .pdf, .md, .docx, .txt</p>
+            <input type="file" id="file-input" style="display:none;" accept=".epub,.pdf,.md,.markdown,.docx,.txt,.html" />
+          </div>
+
+          <div class="drawer-section-title">Your Books & Documents</div>
+          <div id="library-list">
+            <!-- Dynamically populated books -->
+          </div>
+
+          <div class="drawer-section-title">Table of Contents</div>
+          <div id="toc-list">
+            <!-- Dynamically populated chapters -->
+          </div>
+
+          <div class="drawer-section-title">Pronunciation & Names Override</div>
+          <div class="lexicon-manager-card">
+            <div style="font-size:0.75rem; color:var(--text-muted); margin-bottom:0.5rem;">
+              Teach the reader how to pronounce ancient names or terms (e.g. <em>Manasseh &rarr; muh-NASS-uh</em>).
+            </div>
+            <div style="display:flex; gap:0.35rem; margin-bottom:0.5rem;">
+              <input type="text" id="lex-word-input" class="app-input" placeholder="Word (e.g. Manasseh)" style="flex:1;" />
+              <input type="text" id="lex-phonetic-input" class="app-input" placeholder="Sounds like" style="flex:1;" />
+              <button id="lex-add-btn" class="icon-btn" style="background:var(--accent-color); color:#fff; border:none; padding:0.35rem 0.65rem;">Save</button>
+            </div>
+            <div id="lexicon-list" class="lexicon-chips-container">
+              <!-- Dynamically loaded pronunciation chips -->
+            </div>
+          </div>
+        </div>
+      </aside>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

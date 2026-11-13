@@ -1,0 +1,539 @@
+/* KaizenReader Typography & Design System
+   Crafted for Apple Silicon M1: Clean, distraction-free, fluid 60fps animations.
+*/
+
+:root {
+  /* Default Warm Sepia Theme */
+  --bg-color: #fbf7ee;
+  --surface-color: #f3ece0;
+  --surface-border: #e6dcce;
+  --text-main: #2b2824;
+  --text-muted: #726b63;
+  --accent-color: #a85d26;
+  --accent-glow: rgba(168, 93, 38, 0.16);
+  --active-sentence-bg: rgba(220, 160, 90, 0.22);
+  --active-sentence-border: #dca05a;
+  --font-serif: "Charter", "Georgia", "Iowan Old Style", "Times New Roman", serif;
+  --font-sans: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", sans-serif;
+  --font-mono: "SF Mono", "Menlo", "Courier New", monospace;
+  --reader-max-width: 760px;
+  --content-font-size: 19px;
+  --content-line-height: 1.78;
+}
+
+[data-theme="light"] {
+  --bg-color: #ffffff;
+  --surface-color: #f7f8fa;
+  --surface-border: #e3e6eb;
+  --text-main: #18191b;
+  --text-muted: #6a6f7a;
+  --accent-color: #1e60d5;
+  --accent-glow: rgba(30, 96, 213, 0.12);
+  --active-sentence-bg: rgba(30, 96, 213, 0.15);
+  --active-sentence-border: #3b82f6;
+}
+
+[data-theme="dark"] {
+  --bg-color: #121316;
+  --surface-color: #1c1e22;
+  --surface-border: #292d34;
+  --text-main: #e6e8ec;
+  --text-muted: #8e94a0;
+  --accent-color: #f59e0b;
+  --accent-glow: rgba(245, 158, 11, 0.18);
+  --active-sentence-bg: rgba(245, 158, 11, 0.22);
+  --active-sentence-border: #f59e0b;
+}
+
+[data-theme="eink"] {
+  --bg-color: #f4f4f4;
+  --surface-color: #e8e8e8;
+  --surface-border: #cccccc;
+  --text-main: #000000;
+  --text-muted: #444444;
+  --accent-color: #000000;
+  --accent-glow: rgba(0, 0, 0, 0.08);
+  --active-sentence-bg: rgba(0, 0, 0, 0.12);
+  --active-sentence-border: #000000;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background-color: var(--bg-color);
+  color: var(--text-main);
+  font-family: var(--font-serif);
+  font-size: var(--content-font-size);
+  line-height: var(--content-line-height);
+  transition: background-color 0.2s ease, color 0.2s ease;
+  overflow-x: hidden;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* App Shell Layout */
+#app-container {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  position: relative;
+}
+
+/* Header & Top Bar */
+header.app-header {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 54px;
+  background-color: var(--bg-color);
+  border-bottom: 1px solid var(--surface-border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 1.25rem;
+  z-index: 100;
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+
+.header-left, .header-right {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.app-brand {
+  font-family: var(--font-sans);
+  font-weight: 700;
+  font-size: 1rem;
+  letter-spacing: -0.02em;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  color: var(--accent-color);
+}
+
+.book-title-display {
+  font-family: var(--font-sans);
+  font-size: 0.85rem;
+  font-weight: 500;
+  color: var(--text-muted);
+  max-width: 320px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Buttons and Controls */
+button.icon-btn {
+  background: var(--surface-color);
+  border: 1px solid var(--surface-border);
+  color: var(--text-main);
+  padding: 0.4rem 0.65rem;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.82rem;
+  font-family: var(--font-sans);
+  font-weight: 500;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  transition: all 0.15s ease;
+}
+
+button.icon-btn:hover {
+  border-color: var(--accent-color);
+  color: var(--accent-color);
+}
+
+.mobile-badge {
+  font-family: var(--font-sans);
+  font-size: 0.72rem;
+  background: var(--surface-color);
+  border: 1px solid var(--surface-border);
+  padding: 0.25rem 0.6rem;
+  border-radius: 12px;
+  color: var(--text-muted);
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+/* Main Reader Viewport */
+main.reader-main {
+  flex: 1;
+  margin-top: 54px;
+  margin-bottom: 74px;
+  overflow-y: auto;
+  scroll-behavior: smooth;
+  padding: 3rem 1.5rem 6rem;
+}
+
+.content-container {
+  max-width: var(--reader-max-width);
+  margin: 0 auto;
+}
+
+/* Document Typography Elements */
+.doc-chapter-header {
+  margin-bottom: 2.5rem;
+  padding-bottom: 1rem;
+  border-bottom: 1px solid var(--surface-border);
+}
+
+.doc-chapter-title {
+  font-family: var(--font-serif);
+  font-size: 1.85rem;
+  font-weight: 700;
+  line-height: 1.25;
+  color: var(--text-main);
+  margin-bottom: 0.4rem;
+}
+
+.doc-chapter-meta {
+  font-family: var(--font-sans);
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.reader-paragraph {
+  margin-bottom: 1.35rem;
+  text-align: justify;
+}
+
+.reader-heading-1 {
+  font-size: 1.6rem;
+  font-weight: 700;
+  margin: 2rem 0 1rem;
+  line-height: 1.3;
+}
+
+.reader-heading-2 {
+  font-size: 1.3rem;
+  font-weight: 600;
+  margin: 1.75rem 0 0.85rem;
+  line-height: 1.3;
+}
+
+.reader-blockquote {
+  border-left: 3px solid var(--accent-color);
+  padding-left: 1.25rem;
+  margin: 1.5rem 0;
+  font-style: italic;
+  color: var(--text-muted);
+}
+
+.reader-code {
+  font-family: var(--font-mono);
+  background: var(--surface-color);
+  border: 1px solid var(--surface-border);
+  padding: 0.85rem 1rem;
+  border-radius: 6px;
+  font-size: 0.85rem;
+  line-height: 1.5;
+  overflow-x: auto;
+  margin: 1.25rem 0;
+  white-space: pre-wrap;
+}
+
+/* Sentence Elements & Spotlight */
+.sentence-span {
+  position: relative;
+  border-radius: 3px;
+  padding: 1px 2px;
+  cursor: pointer;
+  transition: background-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.sentence-span:hover {
+  background-color: var(--accent-glow);
+}
+
+.sentence-span.active-sentence {
+  background-color: var(--active-sentence-bg);
+  box-shadow: 0 0 0 1px var(--active-sentence-border);
+  color: var(--text-main);
+  font-weight: 500;
+}
+
+/* Floating Bottom Audio Player Bar */
+footer.player-bar {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 70px;
+  background-color: var(--bg-color);
+  border-top: 1px solid var(--surface-border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 1.5rem;
+  z-index: 100;
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+
+.player-left, .player-center, .player-right {
+  display: flex;
+  align-items: center;
+  gap: 0.85rem;
+}
+
+.play-main-btn {
+  background: var(--accent-color);
+  color: #ffffff;
+  border: none;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  font-size: 1.25rem;
+  box-shadow: 0 2px 8px var(--accent-glow);
+  transition: transform 0.1s ease, background-color 0.15s ease;
+}
+
+.play-main-btn:hover {
+  transform: scale(1.05);
+}
+
+.play-main-btn:active {
+  transform: scale(0.96);
+}
+
+.control-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-main);
+  font-size: 1.1rem;
+  cursor: pointer;
+  padding: 0.4rem;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+}
+
+.control-btn:hover {
+  background: var(--surface-color);
+  color: var(--accent-color);
+}
+
+/* Select Dropdowns */
+.select-wrapper {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-family: var(--font-sans);
+  font-size: 0.82rem;
+  color: var(--text-muted);
+}
+
+select.app-select {
+  background: var(--surface-color);
+  border: 1px solid var(--surface-border);
+  color: var(--text-main);
+  padding: 0.35rem 0.6rem;
+  border-radius: 6px;
+  font-size: 0.82rem;
+  font-family: var(--font-sans);
+  cursor: pointer;
+}
+
+/* Progress Scrub Line */
+.progress-line-container {
+  width: 160px;
+  height: 4px;
+  background: var(--surface-border);
+  border-radius: 2px;
+  position: relative;
+  cursor: pointer;
+}
+
+.progress-line-fill {
+  height: 100%;
+  background: var(--accent-color);
+  border-radius: 2px;
+  width: 0%;
+  transition: width 0.1s linear;
+}
+
+/* Drawer / Sidebar for TOC & Library */
+.drawer-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.4);
+  z-index: 200;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.2s ease;
+}
+
+.drawer-overlay.open {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.drawer-sidebar {
+  position: fixed;
+  top: 0;
+  left: -380px;
+  bottom: 0;
+  width: 360px;
+  background: var(--bg-color);
+  border-right: 1px solid var(--surface-border);
+  z-index: 210;
+  transition: left 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+  display: flex;
+  flex-direction: column;
+}
+
+.drawer-overlay.open .drawer-sidebar {
+  left: 0;
+}
+
+.drawer-header {
+  padding: 1rem 1.25rem;
+  border-bottom: 1px solid var(--surface-border);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-family: var(--font-sans);
+}
+
+.drawer-content {
+  flex: 1;
+  overflow-y: auto;
+  padding: 1rem 1.25rem;
+}
+
+.drawer-section-title {
+  font-family: var(--font-sans);
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  margin: 1rem 0 0.5rem;
+}
+
+.toc-item, .library-item {
+  padding: 0.55rem 0.65rem;
+  border-radius: 6px;
+  cursor: pointer;
+  font-family: var(--font-sans);
+  font-size: 0.88rem;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.25rem;
+  transition: background-color 0.15s ease;
+}
+
+.toc-item:hover, .library-item:hover {
+  background: var(--surface-color);
+}
+
+.toc-item.active {
+  background: var(--surface-color);
+  color: var(--accent-color);
+  font-weight: 600;
+}
+
+/* Upload Dropzone */
+.dropzone {
+  border: 2px dashed var(--surface-border);
+  border-radius: 8px;
+  padding: 1.25rem;
+  text-align: center;
+  margin-bottom: 1.25rem;
+  cursor: pointer;
+  font-family: var(--font-sans);
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  transition: all 0.2s ease;
+}
+
+.dropzone:hover, .dropzone.dragover {
+  border-color: var(--accent-color);
+  background: var(--surface-color);
+}
+
+/* Pronunciation Lexicon Styles */
+.lexicon-manager-card {
+  background: var(--surface-color);
+  border: 1px solid var(--surface-border);
+  border-radius: 8px;
+  padding: 0.85rem;
+  margin-bottom: 1.25rem;
+  font-family: var(--font-sans);
+}
+
+.app-input {
+  background: var(--bg-color);
+  border: 1px solid var(--surface-border);
+  color: var(--text-main);
+  padding: 0.35rem 0.55rem;
+  border-radius: 6px;
+  font-size: 0.8rem;
+  font-family: var(--font-sans);
+  outline: none;
+}
+
+.app-input:focus {
+  border-color: var(--accent-color);
+}
+
+.lexicon-chips-container {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  max-height: 160px;
+  overflow-y: auto;
+  padding-top: 0.35rem;
+}
+
+.lex-chip {
+  background: var(--bg-color);
+  border: 1px solid var(--surface-border);
+  border-radius: 14px;
+  padding: 0.2rem 0.55rem;
+  font-size: 0.75rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.lex-chip-word {
+  font-weight: 600;
+  color: var(--text-main);
+}
+
+.lex-chip-arrow {
+  color: var(--text-muted);
+}
+
+.lex-chip-phonetic {
+  color: var(--accent-color);
+}
+
+.lex-chip-del {
+  cursor: pointer;
+  color: var(--text-muted);
+  font-weight: bold;
+  padding-left: 0.2rem;
+}
+
+.lex-chip-del:hover {
+  color: #ef4444;
+}
