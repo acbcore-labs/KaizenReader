@@ -60,18 +60,25 @@ Includes 54 studio voices:
 
 ---
 
-## 4. Quick Start
+## 4. Quick Start & Spotlight Installation
 
-### Launch Desktop App
+### Install as Native macOS App (Launch via Spotlight / Raycast)
+To install KaizenReader into `~/Applications` so it appears in Spotlight, Raycast, and your Application launcher:
 ```bash
-cd KaizenReader
+cd /Users/kaizenpro/Desktop/KaizenReader
+./run.sh --install
+```
+*Once installed, simply press `Cmd + Space`, type **KaizenReader**, and hit Enter!*
+
+### Launch from Terminal Directly
+```bash
+cd /Users/kaizenpro/Desktop/KaizenReader
 ./run.sh
 ```
-*This starts the background daemon and opens the native macOS window with Dock icon and Apple menu bar.*
 
 ### Launch Server / Headless Companion Mode
 ```bash
-cd KaizenReader
+cd /Users/kaizenpro/Desktop/KaizenReader
 ./run.sh --server --port 8977
 ```
 Then visit:
