@@ -97,6 +97,8 @@ def parse_pdf(file_path: Path) -> Document:
         # Check for chapter headings
         for p_str in raw_paras:
             clean_p = unhyphenate(p_str)
+            clean_p = re.sub(r'[\t\r\f]+', ' ', clean_p)
+            clean_p = re.sub(r'\s+', ' ', clean_p).strip()
             if not clean_p or len(clean_p) < 2:
                 continue
 
