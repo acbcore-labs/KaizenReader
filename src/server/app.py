@@ -66,9 +66,10 @@ def index_existing_books():
 
 @app.on_event("startup")
 def startup_event():
-    # Warm up engine and load books
-    get_engine()
-    index_existing_books()
+    # Run heavy initializations in background threads so server binds socket instantly (<50ms)
+    import threading
+    threading.Thread(target=get_engine, daemon=True).start()
+    threading.Thread(target=index_existing_books, daemon=True).start()
 
 # ----------------- REST Endpoints ----------------- #
 

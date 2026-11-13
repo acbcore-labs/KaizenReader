@@ -196,6 +196,7 @@ function populateVoiceSelect(voices) {
   }
 }
 
+let libraryRetryCount = 0;
 async function loadLibrary() {
   try {
     const res = await fetch("/api/library");
@@ -207,8 +208,22 @@ async function loadLibrary() {
 
     if (targetBook) {
       await openBook(targetBook.id);
+    } else if (books.length === 0 && libraryRetryCount < 8) {
+      libraryRetryCount++;
+      elements.readerContent.innerHTML = `
+        <div style="text-align:center; padding: 4rem 1rem;">
+          <h2 style="font-family:var(--font-sans); font-size:1.2rem; margin-bottom:0.5rem;">Indexing Library...</h2>
+          <p style="font-size:0.85rem; color:var(--text-muted);">Analyzing documents and optimizing pronunciation models on Apple Silicon M1...</p>
+        </div>
+      `;
+      setTimeout(loadLibrary, 1000);
     } else {
-      elements.readerContent.innerHTML = "<p style='text-align:center;'>No books in library. Drop a file above to begin reading.</p>";
+      elements.readerContent.innerHTML = `
+        <div style="text-align:center; padding: 4rem 1rem;">
+          <h2 style="font-family:var(--font-sans); font-size:1.2rem; margin-bottom:0.5rem;">Library Ready</h2>
+          <p style="font-size:0.85rem; color:var(--text-muted); margin-bottom:1rem;">Drop any book or document file (.epub, .pdf, .md, .docx, .txt) into the window to begin reading.</p>
+        </div>
+      `;
     }
   } catch (err) {
     console.error("Error loading library:", err);
