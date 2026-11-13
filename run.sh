@@ -13,4 +13,8 @@ if [ ! -d ".venv" ]; then
     uv pip install --python .venv/bin/python -r requirements.txt
 fi
 
+if [ "$1" == "--install" ]; then
+    exec "$SCRIPT_DIR/install_mac_app.sh"
+fi
+
 exec .venv/bin/python src/main.py "$@"
