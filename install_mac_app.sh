@@ -68,7 +68,11 @@ fi
 # 4. Create MacOS Launcher Script
 cat << EOF > "$TARGET_APP/Contents/MacOS/KaizenReader"
 #!/usr/bin/env bash
-REPO_DIR="$SCRIPT_DIR"
+if [ -d "$HOME/Developer/KaizenReader" ]; then
+    REPO_DIR="$HOME/Developer/KaizenReader"
+else
+    REPO_DIR="$SCRIPT_DIR"
+fi
 cd "\$REPO_DIR" || exit 1
 export PATH="/opt/homebrew/bin:/usr/local/bin:\$PATH"
 exec "\$REPO_DIR/.venv/bin/python" "\$REPO_DIR/src/main.py" "\$@"

@@ -93,9 +93,12 @@ Then visit:
 | :--- | :--- |
 | `Space` | Play / Pause |
 | `←` / `→` | Previous / Next sentence |
-| `↑` / `↓` | Increase / Decrease playback speed (0.75x – 2.5x) |
-| `M` | Toggle Library & Table of Contents drawer |
+| `[` / `]` | Previous / Next chapter |
+| `J` or `Cmd + J` | Toggle Interactive Quick-Nav Table of Contents HUD |
+| `↑` / `↓` | Increase / Decrease playback speed (0.75x – 2.5x) or navigate HUD |
+| `M` | Toggle Library Drawer |
 | `T` | Cycle Reading Theme (Warm Sepia → Clean Light → OLED Dark → E-Ink) |
+| `Esc` | Dismiss Quick-Nav HUD, Search, or TOC inspector |
 | `Click on any sentence` | **Click-to-Speak** (instantly seeks and plays that sentence) |
 
 ---

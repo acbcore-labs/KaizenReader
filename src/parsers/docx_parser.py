@@ -4,19 +4,18 @@ Parses Microsoft Word documents using native XML styles, extracting headings
 as chapter delimiters and standard paragraphs into sentence nodes.
 """
 from pathlib import Path
-import uuid
 import docx
 
-from src.parsers.base import Document, Chapter, ParagraphNode, SentenceNode
-from src.tts.normalizer import split_into_sentences, normalize_text_for_tts, unhyphenate
+from src.parsers.base import Document, Chapter, ParagraphNode, SentenceNode, deterministic_doc_id
+from src.tts.normalizer import split_into_sentences, unhyphenate
+
 
 def parse_docx(file_path: Path) -> Document:
     doc = docx.Document(str(file_path))
-    
-    doc_id = str(uuid.uuid4())[:8]
+
+    doc_id = deterministic_doc_id(file_path)
     title = file_path.stem.replace("_", " ").title()
 
-    # Read core properties if available
     author = "Unknown Author"
     if doc.core_properties:
         if doc.core_properties.title:
@@ -29,7 +28,7 @@ def parse_docx(file_path: Path) -> Document:
         title=title,
         author=author,
         file_format="docx",
-        file_path=str(file_path)
+        file_path=str(file_path),
     )
 
     chapter_idx = 0
@@ -53,7 +52,7 @@ def parse_docx(file_path: Path) -> Document:
                 id=f"ch_{chapter_idx}",
                 index=chapter_idx,
                 title=current_chapter_title,
-                paragraphs=current_paragraphs
+                paragraphs=current_paragraphs,
             ))
             chapter_idx += 1
             current_chapter_title = clean_text
@@ -65,17 +64,16 @@ def parse_docx(file_path: Path) -> Document:
             id=node_id,
             text=clean_text,
             node_type="h1" if is_h1_or_h2 else ("h2" if is_heading else "p"),
-            is_heading=is_heading
+            is_heading=is_heading,
         )
 
         for s_idx, (s_text, s_start, s_end) in enumerate(split_into_sentences(clean_text)):
-            s_id = f"s_{chapter_idx}_{p_idx}_{s_idx}"
             node.sentences.append(SentenceNode(
-                id=s_id,
+                id=f"s_{chapter_idx}_{p_idx}_{s_idx}",
                 text=s_text,
-                tts_text=normalize_text_for_tts(s_text),
+                skip_tts=False,
                 char_start=s_start,
-                char_end=s_end
+                char_end=s_end,
             ))
 
         if node.sentences:
@@ -87,7 +85,7 @@ def parse_docx(file_path: Path) -> Document:
             id=f"ch_{chapter_idx}",
             index=chapter_idx,
             title=current_chapter_title,
-            paragraphs=current_paragraphs
+            paragraphs=current_paragraphs,
         ))
 
     document.compute_stats()

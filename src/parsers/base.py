@@ -1,17 +1,31 @@
 """Document AST and Semantic Node Definitions for KaizenReader.
 
 Enforces Semantic Rigor: documents are structured hierarchies of chapters,
-sections, paragraphs, and sentence nodes with exact character coordinates.
+sections, paragraphs, and sentence nodes with deterministic content-hashed IDs
+and exact character coordinates.
 """
-from typing import List, Optional, Dict, Any
+import hashlib
+from pathlib import Path
+from typing import List, Optional
 from pydantic import BaseModel, Field
+
+
+def deterministic_doc_id(file_path: Path) -> str:
+    """Compute a stable 12-char ID from file content so bookmarks survive restarts."""
+    h = hashlib.sha256()
+    with open(file_path, "rb") as f:
+        while chunk := f.read(65536):
+            h.update(chunk)
+    return h.hexdigest()[:12]
+
 
 class SentenceNode(BaseModel):
     id: str
     text: str
-    tts_text: str
+    skip_tts: bool = False
     char_start: int
     char_end: int
+
 
 class ParagraphNode(BaseModel):
     id: str
@@ -22,11 +36,13 @@ class ParagraphNode(BaseModel):
     is_quote: bool = False
     sentences: List[SentenceNode] = Field(default_factory=list)
 
+
 class Chapter(BaseModel):
     id: str
     index: int
     title: str
     paragraphs: List[ParagraphNode] = Field(default_factory=list)
+
 
 class Document(BaseModel):
     id: str
@@ -34,6 +50,8 @@ class Document(BaseModel):
     author: str = "Unknown"
     file_format: str
     file_path: Optional[str] = None
+    is_sample: bool = False
+    created_at: Optional[float] = None
     chapters: List[Chapter] = Field(default_factory=list)
     total_words: int = 0
     total_sentences: int = 0
