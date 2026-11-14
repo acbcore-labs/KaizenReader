@@ -211,7 +211,7 @@ def normalize_technical_and_units(text: str) -> str:
         (r'kHz', 'kilohertz'),
         (r'Hz', 'hertz'),
         (r'ms', 'milliseconds'),
-        (r'μs|us', 'microseconds'),
+        (r'(?:μs|us)', 'microseconds'),
         (r'ns', 'nanoseconds'),
         (r'km', 'kilometers'),
         (r'cm', 'centimeters'),
@@ -222,7 +222,7 @@ def normalize_technical_and_units(text: str) -> str:
         (r'mW', 'milliwatts'),
     ]
     for abbr, full in unit_map:
-        text = re.sub(rf'\b(\d+(?:\.\d+)?)\s*{abbr}\b', rf'\1 {full}', text)
+        text = re.sub(rf'\b(\d+(?:\.\d+)?)\s*(?:{abbr})\b', rf'\1 {full}', text)
 
     # Resolution / dimensions: 1920x1080 or 1920×1080
     text = re.sub(r'\b(\d+)\s*[x×]\s*(\d+)\b', r'\1 by \2', text)
