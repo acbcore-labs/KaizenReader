@@ -187,8 +187,11 @@ def is_ipa(value: str) -> bool:
 
 
 def sanitize_ipa(ipa: str) -> str:
-    """Strip slashes and filter to valid Kokoro vocabulary phonemes."""
+    """Strip slashes and filter to valid Kokoro vocabulary phonemes.
+    Automatically maps Latin 'r' to English turned-r 'ɹ' to avoid harsh rolled R.
+    """
     s = ipa.strip().strip("/")
+    s = s.replace("r", "ɹ")
     return "".join(ch for ch in s if ch in KOKORO_VOCAB_CHARS)
 
 
