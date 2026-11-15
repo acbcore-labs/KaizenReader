@@ -41,6 +41,15 @@ class Chapter(BaseModel):
     id: str
     index: int
     title: str
+    display_title: Optional[str] = None
+    category: str = "body"  # "front_matter", "body", "back_matter"
+    section_type: str = "chapter"  # "toc", "title_page", "copyright", "introduction", "chapter", "part", "appendix", "index", etc.
+    chapter_number: Optional[int] = None
+    part_title: Optional[str] = None
+    is_toc: bool = False
+    is_front_matter: bool = False
+    is_back_matter: bool = False
+    badge_label: Optional[str] = None
     paragraphs: List[ParagraphNode] = Field(default_factory=list)
 
 
@@ -55,8 +64,18 @@ class Document(BaseModel):
     chapters: List[Chapter] = Field(default_factory=list)
     total_words: int = 0
     total_sentences: int = 0
+    total_body_chapters: int = 0
+    has_toc: bool = False
 
     def compute_stats(self):
+        from src.parsers.classifier import categorize_document_chapters, filter_empty_part_dividers
+
+        # Filter out empty part divider pages that only repeat the part title
+        self.chapters = filter_empty_part_dividers(self.chapters)
+        for idx, ch in enumerate(self.chapters):
+            ch.index = idx
+            ch.id = f"ch_{idx}"
+
         w_count = 0
         s_count = 0
         for ch in self.chapters:
@@ -65,3 +84,5 @@ class Document(BaseModel):
                 s_count += len(p.sentences)
         self.total_words = w_count
         self.total_sentences = s_count
+        self.total_body_chapters = categorize_document_chapters(self.chapters)
+        self.has_toc = any(ch.is_toc for ch in self.chapters)

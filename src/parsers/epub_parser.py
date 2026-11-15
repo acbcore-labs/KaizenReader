@@ -94,7 +94,7 @@ def parse_epub_fallback_zip(file_path: Path) -> Document:
     with zipfile.ZipFile(file_path, "r") as z:
         html_files = [
             f for f in z.namelist()
-            if f.lower().endswith((".xhtml", ".html", ".htm")) and "nav" not in f.lower()
+            if f.lower().endswith((".xhtml", ".html", ".htm"))
         ]
         html_files.sort()
 
@@ -102,13 +102,21 @@ def parse_epub_fallback_zip(file_path: Path) -> Document:
         for fname in html_files:
             content = z.read(fname).decode("utf-8", errors="ignore")
             soup = BeautifulSoup(content, "lxml")
-            for tag in soup(["script", "style", "nav", "header", "footer"]):
-                tag.decompose()
 
+            is_toc = ("toc" in fname.lower() or "nav" in fname.lower())
             chapter_title = f"Chapter {chapter_idx + 1}"
             h_tag = soup.find(["h1", "h2", "h3", "title"])
             if h_tag and h_tag.get_text(strip=True):
                 chapter_title = h_tag.get_text(strip=True)
+
+            if "contents" in chapter_title.lower() or "table of contents" in chapter_title.lower():
+                is_toc = True
+
+            strip_tags = ["script", "style", "header", "footer"]
+            if not is_toc:
+                strip_tags.append("nav")
+            for tag in soup(strip_tags):
+                tag.decompose()
 
             paragraphs = _build_paragraphs_from_soup(soup, chapter_idx)
             if paragraphs:
@@ -116,6 +124,9 @@ def parse_epub_fallback_zip(file_path: Path) -> Document:
                     id=f"ch_{chapter_idx}",
                     index=chapter_idx,
                     title=chapter_title,
+                    category="front_matter" if is_toc else "body",
+                    section_type="toc" if is_toc else "chapter",
+                    is_toc=is_toc,
                     paragraphs=paragraphs,
                 ))
                 chapter_idx += 1
@@ -155,15 +166,25 @@ def parse_epub(file_path: Path) -> Document:
         if not item or item.get_type() != ebooklib.ITEM_DOCUMENT:
             continue
 
+        item_name = (item.get_name() or "").lower()
+        is_toc = ("toc" in item_name or "nav" in item_name or "toc" in item_id[0].lower())
+
         content = item.get_content().decode("utf-8", errors="ignore")
         soup = BeautifulSoup(content, "lxml")
-        for tag in soup(["script", "style", "nav", "header", "footer"]):
-            tag.decompose()
 
         chapter_title = f"Chapter {chapter_idx + 1}"
         h_tag = soup.find(["h1", "h2", "h3", "title"])
         if h_tag and h_tag.get_text(strip=True):
             chapter_title = h_tag.get_text(strip=True)
+
+        if "contents" in chapter_title.lower() or "table of contents" in chapter_title.lower():
+            is_toc = True
+
+        strip_tags = ["script", "style", "header", "footer"]
+        if not is_toc:
+            strip_tags.append("nav")
+        for tag in soup(strip_tags):
+            tag.decompose()
 
         paragraphs = _build_paragraphs_from_soup(soup, chapter_idx)
         if paragraphs:
@@ -171,6 +192,9 @@ def parse_epub(file_path: Path) -> Document:
                 id=f"ch_{chapter_idx}",
                 index=chapter_idx,
                 title=chapter_title,
+                category="front_matter" if is_toc else "body",
+                section_type="toc" if is_toc else "chapter",
+                is_toc=is_toc,
                 paragraphs=paragraphs,
             ))
             chapter_idx += 1

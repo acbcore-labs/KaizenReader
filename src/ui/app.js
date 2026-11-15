@@ -933,18 +933,33 @@ function computeAllChaptersMetadata(book) {
     const headings = [];
     let sCounter = 0;
 
+    const isTOC = Boolean(ch.is_toc || ch.section_type === "toc" || (ch.title && /table\s+of\s+contents|contents/i.test(ch.title)));
+    const isFrontMatter = Boolean(ch.is_front_matter || ch.category === "front_matter" || isTOC);
+    const isBackMatter = Boolean(ch.is_back_matter || ch.category === "back_matter");
+
     ch.paragraphs.forEach((p) => {
       const pWords = p.text ? p.text.split(/\s+/).filter(Boolean).length : 0;
       wordCount += pWords;
       const pSentences = p.sentences ? p.sentences.length : 0;
 
-      if (p.is_heading || ["h1", "h2", "h3", "h4"].includes(p.node_type)) {
-        headings.push({
-          text: p.text.trim(),
-          nodeType: p.node_type || "h2",
-          paragraphId: p.id,
-          firstSentenceIndex: sCounter,
-        });
+      // Only gather genuine subheadings for non-TOC, non-titlepage chapters to avoid clutter
+      if (!isTOC && ch.section_type !== "title_page" && (p.is_heading || ["h1", "h2", "h3", "h4"].includes(p.node_type))) {
+        const hText = p.text.trim();
+        const chTitle = (ch.title || "").trim();
+        const partTitle = (ch.part_title || "").trim();
+        // Skip headings that duplicate the chapter title or part title
+        if (
+          hText.toLowerCase() !== chTitle.toLowerCase() &&
+          (!partTitle || hText.toLowerCase() !== partTitle.toLowerCase()) &&
+          !chTitle.toLowerCase().startsWith(hText.toLowerCase())
+        ) {
+          headings.push({
+            text: hText,
+            nodeType: p.node_type || "h2",
+            paragraphId: p.id,
+            firstSentenceIndex: sCounter,
+          });
+        }
       }
 
       sCounter += pSentences;
@@ -954,9 +969,27 @@ function computeAllChaptersMetadata(book) {
     const speed = state.speed || 1.0;
     const estimatedMinutes = Math.max(1, Math.round(wordCount / Math.max(1, 160 * speed)));
 
+    let badgeLabel = ch.badge_label;
+    if (!badgeLabel) {
+      if (isTOC) badgeLabel = "TOC";
+      else if (ch.section_type === "index" || /index/i.test(ch.title)) badgeLabel = "Index";
+      else if (isFrontMatter) badgeLabel = "Front";
+      else if (isBackMatter) badgeLabel = "App";
+      else if (ch.chapter_number) badgeLabel = `Ch ${ch.chapter_number}`;
+      else badgeLabel = `Ch ${idx + 1}`;
+    }
+
     return {
       chapterIndex: idx,
-      title: ch.title || `Chapter ${idx + 1}`,
+      title: ch.title || (isTOC ? "Table of Contents" : `Chapter ${idx + 1}`),
+      category: ch.category || (isTOC ? "front_matter" : (isBackMatter ? "back_matter" : "body")),
+      sectionType: ch.section_type || (isTOC ? "toc" : "chapter"),
+      chapterNumber: ch.chapter_number || null,
+      partTitle: ch.part_title || null,
+      isTOC,
+      isFrontMatter,
+      isBackMatter,
+      badgeLabel,
       wordCount,
       sentenceCount,
       estimatedMinutes,
@@ -968,13 +1001,28 @@ function computeAllChaptersMetadata(book) {
 function updateHeaderTOC() {
   if (!state.currentBook) return;
   const meta = state.chapterMetadata[state.currentChapterIndex];
+  const bodyChapters = state.chapterMetadata.filter((m) => m.category === "body" && m.sectionType !== "part");
+  const totalBody = state.currentBook.total_body_chapters || bodyChapters.length || state.currentBook.chapters.length;
   const totalCh = state.currentBook.chapters.length;
   const currentPct = state.sentencesInChapter.length > 0
     ? Math.round(((state.currentSentenceIndex + 1) / state.sentencesInChapter.length) * 100)
     : 0;
 
+  let badgeText = `Ch ${state.currentChapterIndex + 1}`;
+  if (meta) {
+    if (meta.isTOC) {
+      badgeText = "TOC";
+    } else if (meta.sectionType === "index") {
+      badgeText = "Index";
+    } else if (meta.chapterNumber) {
+      badgeText = `Ch ${meta.chapterNumber} of ${totalBody}`;
+    } else if (meta.badgeLabel) {
+      badgeText = meta.badgeLabel;
+    }
+  }
+
   if (elements.headerTocBadge) {
-    elements.headerTocBadge.textContent = `Ch ${state.currentChapterIndex + 1} of ${totalCh}`;
+    elements.headerTocBadge.textContent = badgeText;
   }
   if (elements.headerTocTitle) {
     elements.headerTocTitle.textContent = meta ? meta.title : (state.currentBook.title || "Reading");
@@ -983,7 +1031,15 @@ function updateHeaderTOC() {
     elements.headerTocPct.textContent = `${currentPct}%`;
   }
   if (elements.zenTriggerBadge) {
-    elements.zenTriggerBadge.textContent = `${state.currentChapterIndex + 1}/${totalCh}`;
+    if (meta && meta.chapterNumber) {
+      elements.zenTriggerBadge.textContent = `${meta.chapterNumber}/${totalBody}`;
+    } else if (meta && meta.isTOC) {
+      elements.zenTriggerBadge.textContent = "TOC";
+    } else if (meta && meta.badgeLabel) {
+      elements.zenTriggerBadge.textContent = meta.badgeLabel;
+    } else {
+      elements.zenTriggerBadge.textContent = `${state.currentChapterIndex + 1}/${totalCh}`;
+    }
   }
 }
 
@@ -992,18 +1048,22 @@ function renderBookSpine() {
   elements.bookSpineBar.innerHTML = "";
 
   const totalWords = state.chapterMetadata.reduce((acc, m) => acc + m.wordCount, 0) || 1;
-  const totalCh = state.chapterMetadata.length;
+  const bodyChapters = state.chapterMetadata.filter((m) => m.category === "body" && m.sectionType !== "part");
+  const totalBody = state.currentBook.total_body_chapters || bodyChapters.length;
 
   if (elements.spineBookTitle) {
     elements.spineBookTitle.textContent = state.currentBook.title;
   }
   if (elements.spineStats) {
-    elements.spineStats.textContent = `${totalCh} chapters · ${totalWords.toLocaleString()} words`;
+    const statsText = totalBody > 0 && totalBody !== state.chapterMetadata.length
+      ? `${totalBody} chapters · ${state.chapterMetadata.length} sections · ${totalWords.toLocaleString()} words`
+      : `${state.chapterMetadata.length} chapters · ${totalWords.toLocaleString()} words`;
+    elements.spineStats.textContent = statsText;
   }
 
   state.chapterMetadata.forEach((meta, idx) => {
     const seg = document.createElement("div");
-    seg.className = "spine-segment";
+    seg.className = `spine-segment ${meta.category || "body"}`;
     const flexVal = Math.max(0.5, (meta.wordCount / totalWords) * 100);
     seg.style.flex = `${flexVal} 0 auto`;
 
@@ -1017,7 +1077,10 @@ function renderBookSpine() {
       if (!elements.spineTooltip) return;
       const rect = seg.getBoundingClientRect();
       const parentRect = elements.bookSpineBar.getBoundingClientRect();
-      elements.spineTooltip.textContent = `Ch ${idx + 1}: ${meta.title} (${meta.wordCount} words · ~${meta.estimatedMinutes}m)`;
+      let label = meta.title;
+      if (meta.isTOC) label = `Table of Contents`;
+      else if (meta.chapterNumber) label = `Ch ${meta.chapterNumber}: ${meta.title}`;
+      elements.spineTooltip.textContent = `${label} (${meta.wordCount} words · ~${meta.estimatedMinutes}m)`;
       elements.spineTooltip.style.display = "block";
       elements.spineTooltip.style.left = `${Math.max(10, Math.min(parentRect.width - 10, rect.left - parentRect.left + rect.width / 2))}px`;
     };
@@ -1044,6 +1107,9 @@ function renderQuickNavHUD(filter = "") {
   renderBookSpine();
 
   let renderedCount = 0;
+  let lastCategory = null;
+  let lastPartTitle = null;
+
   state.chapterMetadata.forEach((meta, idx) => {
     const titleMatches = !q || meta.title.toLowerCase().includes(q);
     const matchingHeadings = q ? meta.headings.filter((h) => h.text.toLowerCase().includes(q)) : meta.headings;
@@ -1051,6 +1117,28 @@ function renderQuickNavHUD(filter = "") {
     if (q && !titleMatches && matchingHeadings.length === 0) return;
 
     renderedCount++;
+
+    // Render category section header if not filtering
+    if (!q && meta.category !== lastCategory) {
+      lastCategory = meta.category;
+      const catHeader = document.createElement("div");
+      catHeader.className = "quick-nav-category-header";
+      let catTitle = "Main Content";
+      if (meta.category === "front_matter") catTitle = "Front Matter";
+      else if (meta.category === "body") catTitle = "Chapters & Sections";
+      else if (meta.category === "back_matter") catTitle = "Back Matter & Index";
+      catHeader.innerHTML = `<span>${catTitle}</span>`;
+      elements.quickNavList.appendChild(catHeader);
+    }
+
+    if (!q && meta.partTitle && meta.partTitle !== lastPartTitle && meta.sectionType !== "part") {
+      lastPartTitle = meta.partTitle;
+      const partHeader = document.createElement("div");
+      partHeader.className = "quick-nav-part-header";
+      partHeader.innerHTML = `<span>${escapeHtml(meta.partTitle)}</span>`;
+      elements.quickNavList.appendChild(partHeader);
+    }
+
     const isCurrent = idx === state.currentChapterIndex;
     let pct = 0;
     if (idx < state.currentChapterIndex) pct = 100;
@@ -1081,10 +1169,12 @@ function renderQuickNavHUD(filter = "") {
       subheadingsHtml = `<div class="quick-nav-subheadings">${listItems}</div>`;
     }
 
+    let badgeClass = meta.isTOC ? "toc" : (meta.sectionType === "index" ? "index" : (meta.category || "body"));
+
     item.innerHTML = `
       <div class="quick-nav-item-main">
         <div class="quick-nav-title-group">
-          <span class="quick-nav-ch-num">Ch ${idx + 1}</span>
+          <span class="quick-nav-badge ${badgeClass}">${escapeHtml(meta.badgeLabel)}</span>
           <span class="quick-nav-item-title">${escapeHtml(meta.title)}</span>
         </div>
         <div class="quick-nav-meta">
@@ -1135,15 +1225,47 @@ function renderZenRail(filter = "") {
   elements.zenRailList.innerHTML = "";
   const q = filter.trim().toLowerCase();
 
+  const bodyChapters = state.chapterMetadata.filter((m) => m.category === "body" && m.sectionType !== "part");
+  const totalBody = state.currentBook.total_body_chapters || bodyChapters.length;
+
   if (elements.zenRailCount) {
-    elements.zenRailCount.textContent = `${state.chapterMetadata.length} chapters`;
+    if (totalBody > 0 && totalBody !== state.chapterMetadata.length) {
+      elements.zenRailCount.textContent = `${totalBody} chapters · ${state.chapterMetadata.length} sections`;
+    } else {
+      elements.zenRailCount.textContent = `${state.chapterMetadata.length} chapters`;
+    }
   }
+
+  let lastCategory = null;
+  let lastPartTitle = null;
 
   state.chapterMetadata.forEach((meta, idx) => {
     const titleMatches = !q || meta.title.toLowerCase().includes(q);
     const matchingHeadings = q ? meta.headings.filter((h) => h.text.toLowerCase().includes(q)) : meta.headings;
 
     if (q && !titleMatches && matchingHeadings.length === 0) return;
+
+    // Render category section header if not filtering
+    if (!q && meta.category !== lastCategory) {
+      lastCategory = meta.category;
+      const catHeader = document.createElement("div");
+      catHeader.className = "zen-rail-category-header";
+      let catTitle = "Main Content";
+      if (meta.category === "front_matter") catTitle = "Front Matter";
+      else if (meta.category === "body") catTitle = "Chapters & Sections";
+      else if (meta.category === "back_matter") catTitle = "Back Matter & Index";
+      catHeader.innerHTML = `<span>${catTitle}</span>`;
+      elements.zenRailList.appendChild(catHeader);
+    }
+
+    // Render part header if new part
+    if (!q && meta.partTitle && meta.partTitle !== lastPartTitle && meta.sectionType !== "part") {
+      lastPartTitle = meta.partTitle;
+      const partHeader = document.createElement("div");
+      partHeader.className = "zen-rail-part-header";
+      partHeader.innerHTML = `<span>${escapeHtml(meta.partTitle)}</span>`;
+      elements.zenRailList.appendChild(partHeader);
+    }
 
     const isCurrent = idx === state.currentChapterIndex;
     let pct = 0;
@@ -1155,8 +1277,19 @@ function renderZenRail(filter = "") {
     }
 
     const card = document.createElement("div");
-    card.className = `zen-chapter-card ${isCurrent ? "active" : ""}`;
+    card.className = `zen-chapter-card ${isCurrent ? "active" : ""} ${meta.category || ""}`;
     card.id = `zen-ch-${idx}`;
+
+    let badgeClass = "zen-badge-chap";
+    if (meta.isTOC) badgeClass = "zen-badge-toc";
+    else if (meta.sectionType === "index") badgeClass = "zen-badge-index";
+    else if (meta.category === "front_matter") badgeClass = "zen-badge-front";
+    else if (meta.category === "back_matter") badgeClass = "zen-badge-back";
+
+    let displayTitle = meta.title;
+    if (meta.isTOC) {
+      displayTitle = "Table of Contents";
+    }
 
     let subheadingsHtml = "";
     if (matchingHeadings.length > 0) {
@@ -1174,7 +1307,10 @@ function renderZenRail(filter = "") {
 
     card.innerHTML = `
       <div class="zen-chapter-card-top">
-        <span class="zen-chapter-card-title">${idx + 1}. ${escapeHtml(meta.title)}</span>
+        <div class="zen-chapter-card-title-wrap">
+          <span class="zen-badge ${badgeClass}">${escapeHtml(meta.badgeLabel)}</span>
+          <span class="zen-chapter-card-title" title="${escapeHtml(meta.title)}">${escapeHtml(displayTitle)}</span>
+        </div>
         <span class="zen-chapter-card-pct">${pct}%</span>
       </div>
       <div class="zen-chapter-card-progress">
@@ -1351,18 +1487,79 @@ function escapeHtml(str) {
     .replace(/"/g, "&quot;");
 }
 
+function findTargetChapterForTOCLine(lineText) {
+  if (!state.chapterMetadata) return -1;
+  const lower = lineText.toLowerCase();
+
+  // 1. Try matching chapter number and optional book number
+  const chMatch = lower.match(/\b(?:ch(?:apter)?\.?)\s*(\d+)/);
+  const bookMatch = lower.match(/\b(?:book|part)\s*(\d+)/);
+
+  if (chMatch) {
+    const cNum = parseInt(chMatch[1], 10);
+    const bNum = bookMatch ? parseInt(bookMatch[1], 10) : null;
+    for (let i = 0; i < state.chapterMetadata.length; i++) {
+      const m = state.chapterMetadata[i];
+      if (m.isTOC) continue;
+      if (bNum && !m.title.toLowerCase().includes(`book ${bNum}`)) continue;
+      if (m.chapterNumber === cNum || m.title.toLowerCase().includes(`chapter ${cNum}`)) {
+        return i;
+      }
+    }
+  }
+
+  // 2. Try matching back matter keywords (e.g. "Giants", "Solomon", "Dead Sea", "Index", "References")
+  for (let i = 0; i < state.chapterMetadata.length; i++) {
+    const m = state.chapterMetadata[i];
+    if (m.isTOC) continue;
+    const mLower = m.title.toLowerCase();
+    if (lower.includes("giant") && mLower.includes("giant")) return i;
+    if (lower.includes("solomon") && mLower.includes("solomon")) return i;
+    if (lower.includes("references") && mLower.includes("references")) return i;
+    if (lower.includes("dead sea") && mLower.includes("dead sea")) return i;
+    if (lower.includes("index") && mLower.includes("index")) return i;
+    if (lower.includes("introduction") && mLower.includes("introduction")) return i;
+  }
+
+  return -1;
+}
+
 function renderCurrentChapter() {
   if (!state.currentBook) return;
   const chapter = state.currentBook.chapters[state.currentChapterIndex];
   if (!chapter) return;
 
+  const meta = state.chapterMetadata[state.currentChapterIndex] || {};
+  const isTOC = Boolean(meta.isTOC || chapter.is_toc || chapter.section_type === "toc");
+  const isIndex = Boolean(meta.sectionType === "index" || chapter.section_type === "index");
+  const bodyChapters = state.chapterMetadata.filter((m) => m.category === "body" && m.sectionType !== "part");
+  const totalBody = state.currentBook.total_body_chapters || bodyChapters.length || state.currentBook.chapters.length;
+
   state.sentencesInChapter = [];
   let sCounter = 0;
 
+  let headerSubtitle = escapeHtml(state.currentBook.title);
+  if (meta.chapterNumber) {
+    headerSubtitle += ` · Chapter ${meta.chapterNumber} of ${totalBody}`;
+    if (meta.partTitle) {
+      headerSubtitle += ` (${escapeHtml(meta.partTitle)})`;
+    }
+  } else if (isTOC) {
+    headerSubtitle += ` · Table of Contents`;
+  } else if (isIndex) {
+    headerSubtitle += ` · Back Matter · Index`;
+  } else if (meta.category === "front_matter") {
+    headerSubtitle += ` · Front Matter`;
+  } else if (meta.category === "back_matter") {
+    headerSubtitle += ` · Back Matter`;
+  } else if (meta.sectionType === "part") {
+    headerSubtitle += ` · Part Overview`;
+  }
+
   let html = `
     <div class="doc-chapter-header">
-      <div class="doc-chapter-meta">${escapeHtml(state.currentBook.title)} · Chapter ${state.currentChapterIndex + 1} of ${state.currentBook.chapters.length}</div>
-      <h1 class="doc-chapter-title">${escapeHtml(chapter.title)}</h1>
+      <div class="doc-chapter-meta">${headerSubtitle}</div>
+      <h1 class="doc-chapter-title">${escapeHtml(isTOC ? "Table of Contents" : chapter.title)}</h1>
     </div>
   `;
 
@@ -1390,7 +1587,15 @@ function renderCurrentChapter() {
       sentenceSpans += `<span class="sentence-span" data-sidx="${idxInChapter}" id="span-${s.id}">${wordHtml} </span>`;
     });
 
-    html += `<div class="${tagClass}" id="para-${p.id}">${sentenceSpans}</div>`;
+    let jumpBtn = "";
+    if (isTOC) {
+      const targetCh = findTargetChapterForTOCLine(p.text);
+      if (targetCh !== -1 && targetCh !== state.currentChapterIndex) {
+        jumpBtn = `<button class="toc-interactive-jump" data-target-ch="${targetCh}" title="Jump directly to this chapter in the reader">Jump →</button>`;
+      }
+    }
+
+    html += `<div class="${tagClass}" id="para-${p.id}">${sentenceSpans}${jumpBtn}</div>`;
   });
 
   elements.readerContent.innerHTML = html;
@@ -1401,6 +1606,16 @@ function renderCurrentChapter() {
       if (sel && sel.toString().trim().length > 0) return;
       const idx = parseInt(el.getAttribute("data-sidx"), 10);
       playSentenceAt(idx);
+    };
+  });
+
+  elements.readerContent.querySelectorAll(".toc-interactive-jump").forEach((btn) => {
+    btn.onclick = (e) => {
+      e.stopPropagation();
+      const targetIdx = parseInt(btn.dataset.targetCh, 10);
+      if (!isNaN(targetIdx)) {
+        goToChapter(targetIdx);
+      }
     };
   });
 
