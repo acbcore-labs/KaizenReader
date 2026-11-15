@@ -693,6 +693,96 @@ select.app-select {
   font-family: var(--font-sans);
 }
 
+.lexicon-tabs-row {
+  display: flex;
+  gap: 0.35rem;
+  margin-bottom: 0.5rem;
+  background: var(--bg-color);
+  padding: 0.2rem;
+  border-radius: 6px;
+  border: 1px solid var(--surface-border);
+}
+
+.lex-tab-btn {
+  flex: 1;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  padding: 0.35rem 0.4rem;
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: all 0.15s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.25rem;
+  white-space: nowrap;
+}
+
+.lex-tab-btn:hover {
+  color: var(--text-main);
+}
+
+.lex-tab-btn.active {
+  background: var(--surface-color);
+  color: var(--text-main);
+  font-weight: 600;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.06);
+}
+
+.lex-precedence-banner {
+  font-size: 0.68rem;
+  color: var(--text-muted);
+  background: var(--bg-color);
+  border: 1px dashed var(--surface-border);
+  border-radius: 4px;
+  padding: 0.25rem 0.45rem;
+  margin-bottom: 0.5rem;
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  overflow-x: auto;
+}
+
+.lex-precedence-tag {
+  font-weight: 600;
+  color: var(--text-main);
+}
+
+.lex-prec-step {
+  color: var(--text-muted);
+}
+
+.lex-prec-step.active {
+  color: var(--accent-color);
+  font-weight: 600;
+}
+
+.lex-scope-select-row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin-bottom: 0.5rem;
+  font-size: 0.72rem;
+  padding-left: 0.1rem;
+}
+
+.lex-scope-radio-label {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  cursor: pointer;
+  color: var(--text-main);
+}
+
+.lex-scope-radio-label input[type="radio"] {
+  cursor: pointer;
+  margin: 0;
+  accent-color: var(--accent-color);
+}
+
 .app-input {
   background: var(--bg-color);
   border: 1px solid var(--surface-border);
@@ -750,6 +840,74 @@ select.app-select {
 
 .lex-chip-del:hover {
   color: #ef4444;
+}
+
+.lex-chip-badge {
+  font-size: 0.65rem;
+  background: var(--surface-border);
+  color: var(--text-muted);
+  padding: 0.1rem 0.35rem;
+  border-radius: 4px;
+  text-transform: lowercase;
+  letter-spacing: 0.02em;
+}
+
+.lex-chip-badge.global {
+  opacity: 0.75;
+}
+
+.lex-prec-badge {
+  font-size: 0.62rem;
+  padding: 0.1rem 0.35rem;
+  border-radius: 4px;
+  letter-spacing: 0.02em;
+}
+
+.lex-prec-badge.overrides {
+  background: #fef3c7;
+  color: #b45309;
+  font-weight: 600;
+  border: 1px solid #fde68a;
+}
+
+.lex-prec-badge.overridden {
+  background: var(--surface-border);
+  color: var(--text-muted);
+  text-decoration: line-through;
+}
+
+.lex-chip.overridden {
+  opacity: 0.65;
+}
+
+.lex-chip-pull-btn {
+  background: var(--surface-border);
+  border: none;
+  color: var(--text-main);
+  border-radius: 4px;
+  font-size: 0.65rem;
+  padding: 0.1rem 0.35rem;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  margin-left: 0.2rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.15rem;
+}
+
+.lex-chip-pull-btn:hover {
+  background: var(--accent-color);
+  color: #fff;
+}
+
+.lexicon-empty-state {
+  width: 100%;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  line-height: 1.4;
+  padding: 0.65rem 0.25rem;
+  text-align: center;
+  font-style: italic;
 }
 
 /* -------------------------------------------------------------

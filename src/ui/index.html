@@ -398,15 +398,45 @@
 
           <div class="drawer-section-title">Pronunciation & IPA Overrides</div>
           <div class="lexicon-manager-card">
-            <div style="font-size:0.75rem; color:var(--text-muted); margin-bottom:0.5rem;">
-              Use respellings (<em>muh-NASS-uh</em>) or IPA (<em>/mənˈæsə/</em>).
+            <!-- Scope Tabs with Counts -->
+            <div class="lexicon-tabs-row">
+              <button id="lex-tab-book" class="lex-tab-btn active" title="Overrides specifically for this book (highest precedence)">
+                📖 This Book (<span id="lex-book-count">0</span>)
+              </button>
+              <button id="lex-tab-general" class="lex-tab-btn" title="General library overrides across all books">
+                🌐 General (<span id="lex-general-count">0</span>)
+              </button>
             </div>
-            <div style="display:flex; gap:0.35rem; margin-bottom:0.5rem;">
+
+            <!-- Precedence Hierarchy Legend -->
+            <div class="lex-precedence-banner" id="lex-precedence-banner">
+              <span class="lex-precedence-tag">Precedence:</span>
+              <span class="lex-prec-step active" id="lex-prec-step-book">1. This Book</span> &gt;
+              <span class="lex-prec-step" id="lex-prec-step-gen">2. General</span> &gt;
+              <span class="lex-prec-step">3. Built-in</span>
+            </div>
+
+            <!-- Input Row -->
+            <div style="display:flex; gap:0.35rem; margin-bottom:0.35rem;">
               <input type="text" id="lex-word-input" class="app-input" placeholder="Word" style="flex:1; min-width:0;" />
               <input type="text" id="lex-phonetic-input" class="app-input" placeholder="Sounds like / IPA" style="flex:1; min-width:0;" />
               <button id="lex-test-btn" class="icon-btn" title="Audition pronunciation">🔊</button>
               <button id="lex-add-btn" class="icon-btn" style="background:var(--accent-color); color:#fff; border:none; padding:0.35rem 0.65rem;">Save</button>
             </div>
+
+            <!-- Target Scope Radio Selector -->
+            <div class="lex-scope-select-row">
+              <span style="font-size:0.7rem; color:var(--text-muted);">Save to:</span>
+              <label class="lex-scope-radio-label">
+                <input type="radio" name="lex-scope" id="lex-scope-book" value="book" checked />
+                <span>This Book</span>
+              </label>
+              <label class="lex-scope-radio-label">
+                <input type="radio" name="lex-scope" id="lex-scope-general" value="general" />
+                <span>General Library</span>
+              </label>
+            </div>
+
             <div id="lexicon-list" class="lexicon-chips-container"></div>
           </div>
         </div>

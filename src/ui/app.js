@@ -81,6 +81,14 @@ const elements = {
   lexAddBtn: document.getElementById("lex-add-btn"),
   lexTestBtn: document.getElementById("lex-test-btn"),
   lexiconList: document.getElementById("lexicon-list"),
+  lexTabBook: document.getElementById("lex-tab-book"),
+  lexTabGeneral: document.getElementById("lex-tab-general"),
+  lexBookCount: document.getElementById("lex-book-count"),
+  lexGeneralCount: document.getElementById("lex-general-count"),
+  lexScopeBook: document.getElementById("lex-scope-book"),
+  lexScopeGeneral: document.getElementById("lex-scope-general"),
+  lexPrecStepBook: document.getElementById("lex-prec-step-book"),
+  lexPrecStepGen: document.getElementById("lex-prec-step-gen"),
   searchToggleBtn: document.getElementById("search-toggle-btn"),
   searchBarPanel: document.getElementById("search-bar-panel"),
   bookSearchInput: document.getElementById("book-search-input"),
@@ -198,35 +206,150 @@ function persistReadingState() {
 
 // ----------------- Lexicon & Audition ----------------- //
 
+let currentLexiconData = {
+  book_overrides: [],
+  general_overrides: [],
+  total_book: 0,
+  total_general: 0,
+};
+
+let activeLexiconTab = "book"; // "book" | "general"
+
 async function loadLexicon() {
   try {
-    const res = await fetch("/api/lexicon");
+    const bookId = state.currentBook ? state.currentBook.id : "";
+    const q = bookId ? `?book_id=${encodeURIComponent(bookId)}` : "";
+    const res = await fetch(`/api/lexicon${q}`);
     const data = await res.json();
-    renderLexicon(data);
+    currentLexiconData = data;
+
+    if (elements.lexBookCount) elements.lexBookCount.textContent = data.total_book || 0;
+    if (elements.lexGeneralCount) elements.lexGeneralCount.textContent = data.total_general || 0;
+
+    renderLexicon();
   } catch (err) {
     console.error("Error loading lexicon:", err);
   }
 }
 
-function renderLexicon(lexicon) {
+function switchLexiconTab(tab) {
+  activeLexiconTab = tab;
+  if (elements.lexTabBook) elements.lexTabBook.classList.toggle("active", tab === "book");
+  if (elements.lexTabGeneral) elements.lexTabGeneral.classList.toggle("active", tab === "general");
+  if (elements.lexPrecStepBook) elements.lexPrecStepBook.classList.toggle("active", tab === "book");
+  if (elements.lexPrecStepGen) elements.lexPrecStepGen.classList.toggle("active", tab === "general");
+
+  if (tab === "book" && elements.lexScopeBook) {
+    elements.lexScopeBook.checked = true;
+  } else if (tab === "general" && elements.lexScopeGeneral) {
+    elements.lexScopeGeneral.checked = true;
+  }
+
+  renderLexicon();
+}
+
+function renderLexicon() {
   if (!elements.lexiconList) return;
   elements.lexiconList.innerHTML = "";
-  for (const [word, phonetic] of Object.entries(lexicon)) {
+
+  const isBookTab = activeLexiconTab === "book";
+  const items = isBookTab ? (currentLexiconData.book_overrides || []) : (currentLexiconData.general_overrides || []);
+
+  if (items.length === 0) {
+    const emptyMsg = document.createElement("div");
+    emptyMsg.className = "lexicon-empty-state";
+    if (isBookTab) {
+      const bookName = state.currentBook ? `"${state.currentBook.title}"` : "this book";
+      emptyMsg.innerHTML = `No custom overrides saved for ${bookName} yet.<br>Overrides added here take <strong>highest precedence</strong> over General library pronunciations.<br><a href="#" id="lex-jump-general-link" style="color:var(--accent-color); text-decoration:underline; font-size:0.75rem; display:inline-block; margin-top:0.35rem;">Browse General Library (${currentLexiconData.total_general || 0}) to pull words &rarr;</a>`;
+    } else {
+      emptyMsg.innerHTML = "No General Library overrides saved yet. Use the inputs above to add one.";
+    }
+    elements.lexiconList.appendChild(emptyMsg);
+
+    const jumpLink = elements.lexiconList.querySelector("#lex-jump-general-link");
+    if (jumpLink) {
+      jumpLink.onclick = (e) => {
+        e.preventDefault();
+        switchLexiconTab("general");
+      };
+    }
+    return;
+  }
+
+  for (const item of items) {
     const chip = document.createElement("div");
     chip.className = "lex-chip";
+    if (!isBookTab && item.overridden_by_book) {
+      chip.classList.add("overridden");
+    }
+
+    let badgeHtml = "";
+    if (isBookTab) {
+      if (item.overrides_general) {
+        badgeHtml = `<span class="lex-prec-badge overrides" title="Overrides General Library pronunciation (${item.general_phonetic || ''})">⚡️ overrides general</span>`;
+      }
+    } else {
+      if (item.overridden_by_book) {
+        badgeHtml = `<span class="lex-prec-badge overridden" title="Overridden by this book's custom pronunciation (${item.book_phonetic || ''})">overridden by book</span>`;
+      }
+    }
+
+    let pullHtml = "";
+    if (!isBookTab && state.currentBook) {
+      pullHtml = `<button class="lex-chip-pull-btn" title="Pull & customize for '${state.currentBook.title}'">📥 Pull</button>`;
+    }
+
     chip.innerHTML = `
       <span class="lex-chip-word"></span>
       <span class="lex-chip-arrow">&rarr;</span>
       <span class="lex-chip-phonetic"></span>
+      ${badgeHtml}
+      ${pullHtml}
       <span class="lex-chip-del" title="Delete override">&times;</span>
     `;
-    chip.querySelector(".lex-chip-word").textContent = word;
-    chip.querySelector(".lex-chip-phonetic").textContent = phonetic;
+    chip.querySelector(".lex-chip-word").textContent = item.word;
+    chip.querySelector(".lex-chip-phonetic").textContent = item.phonetic;
+
+    if (!isBookTab && state.currentBook) {
+      const pullBtn = chip.querySelector(".lex-chip-pull-btn");
+      if (pullBtn) {
+        pullBtn.onclick = async (e) => {
+          e.stopPropagation();
+          await pullLexiconWord(item.word, item.phonetic);
+        };
+      }
+    }
+
     chip.querySelector(".lex-chip-del").onclick = async (e) => {
       e.stopPropagation();
-      await deleteLexiconWord(word);
+      const scope = isBookTab ? "book" : "general";
+      await deleteLexiconWord(item.word, isBookTab ? item.book_id : null, scope);
     };
     elements.lexiconList.appendChild(chip);
+  }
+}
+
+async function pullLexiconWord(word, phonetic) {
+  if (!state.currentBook) {
+    alert("Please open a book first to pull an override into it.");
+    return;
+  }
+  try {
+    await fetch("/api/lexicon/pull", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        word,
+        phonetic,
+        book_id: state.currentBook.id,
+        book_title: state.currentBook.title,
+      }),
+    });
+    state.prefetchCache.clear();
+    switchLexiconTab("book");
+    await loadLexicon();
+  } catch (err) {
+    alert("Error pulling override to book: " + err.message);
   }
 }
 
@@ -235,15 +358,28 @@ async function saveLexiconWord() {
   const phonetic = elements.lexPhoneticInput.value.trim();
   if (!word || !phonetic) return;
 
+  const scopeRadio = document.querySelector('input[name="lex-scope"]:checked');
+  const scope = (scopeRadio && scopeRadio.value === "general") ? "general" : "book";
+
+  const bookId = (scope === "book" && state.currentBook) ? state.currentBook.id : null;
+  const bookTitle = (scope === "book" && state.currentBook) ? state.currentBook.title : "General Library";
+
   try {
     await fetch("/api/lexicon", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ word, phonetic }),
+      body: JSON.stringify({
+        word,
+        phonetic,
+        book_id: bookId,
+        book_title: bookTitle,
+        scope,
+      }),
     });
     state.prefetchCache.clear();
     elements.lexWordInput.value = "";
     elements.lexPhoneticInput.value = "";
+    switchLexiconTab(scope);
     await loadLexicon();
   } catch (err) {
     alert("Error saving pronunciation: " + err.message);
@@ -257,19 +393,29 @@ async function testLexiconWord() {
 
   const ctx = ensureAudioContext();
   const sampleText = phonetic ? (phonetic.startsWith("/") ? phonetic : `/${phonetic}/`) : word;
-  // If user typed a respelling, save-less preview via server lexicon or raw text
   const queryText = phonetic && !phonetic.includes("/") ? word : sampleText;
   if (word && phonetic) {
+    const scopeRadio = document.querySelector('input[name="lex-scope"]:checked');
+    const scope = (scopeRadio && scopeRadio.value === "general") ? "general" : "book";
+    const bookId = (scope === "book" && state.currentBook) ? state.currentBook.id : null;
+    const bookTitle = (scope === "book" && state.currentBook) ? state.currentBook.title : "General Library";
     await fetch("/api/lexicon", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ word, phonetic }),
+      body: JSON.stringify({
+        word,
+        phonetic,
+        book_id: bookId,
+        book_title: bookTitle,
+        scope,
+      }),
     });
     state.prefetchCache.clear();
     await loadLexicon();
   }
   try {
-    const url = `/api/tts/sentence?text=${encodeURIComponent(word || queryText)}&voice=${state.voice}&speed=1.0`;
+    const bookParam = state.currentBook ? `&book_id=${encodeURIComponent(state.currentBook.id)}` : "";
+    const url = `/api/tts/sentence?text=${encodeURIComponent(word || queryText)}&voice=${state.voice}&speed=1.0${bookParam}`;
     const res = await fetch(url);
     const buf = await ctx.decodeAudioData(await res.arrayBuffer());
     const src = ctx.createBufferSource();
@@ -281,9 +427,14 @@ async function testLexiconWord() {
   }
 }
 
-async function deleteLexiconWord(word) {
+async function deleteLexiconWord(word, bookId, scope) {
   try {
-    await fetch(`/api/lexicon/${encodeURIComponent(word)}`, { method: "DELETE" });
+    const params = new URLSearchParams();
+    if (bookId) params.set("book_id", bookId);
+    if (scope) params.set("scope", scope);
+    const q = params.toString() ? `?${params.toString()}` : "";
+
+    await fetch(`/api/lexicon/${encodeURIComponent(word)}${q}`, { method: "DELETE" });
     state.prefetchCache.clear();
     await loadLexicon();
   } catch (err) {
@@ -888,6 +1039,7 @@ async function openBook(bookId) {
 
     computeAllChaptersMetadata(book);
     renderTOC(book.chapters);
+    loadLexicon();
     renderQuickNavHUD();
     renderZenRail();
     if (state.libraryBooks) {
@@ -1700,7 +1852,8 @@ function fetchSentenceAudio(sentence) {
   }
   const ctx = ensureAudioContext();
   const modelSpeed = Math.min(2.0, state.speed);
-  const url = `/api/tts/sentence?text=${encodeURIComponent(sentence.text)}&voice=${encodeURIComponent(state.voice)}&speed=${modelSpeed}&sentence_id=${encodeURIComponent(sentence.id)}&node_type=${encodeURIComponent(sentence.nodeType || "p")}`;
+  const bookParam = state.currentBook?.id ? `&book_id=${encodeURIComponent(state.currentBook.id)}` : "";
+  const url = `/api/tts/sentence?text=${encodeURIComponent(sentence.text)}&voice=${encodeURIComponent(state.voice)}&speed=${modelSpeed}&sentence_id=${encodeURIComponent(sentence.id)}&node_type=${encodeURIComponent(sentence.nodeType || "p")}${bookParam}`;
 
   const promise = fetch(url)
     .then(async (res) => {
@@ -1889,6 +2042,7 @@ function triggerLookahead(startIndex) {
         voice: state.voice,
         speed: modelSpeed,
         node_type: s.nodeType || "p",
+        book_id: state.currentBook ? state.currentBook.id : null,
       });
     }
   }
@@ -2061,6 +2215,18 @@ function setupEventListeners() {
   if (elements.lexTestBtn) {
     elements.lexTestBtn.onclick = testLexiconWord;
   }
+  if (elements.lexTabBook) {
+    elements.lexTabBook.onclick = () => switchLexiconTab("book");
+  }
+  if (elements.lexTabGeneral) {
+    elements.lexTabGeneral.onclick = () => switchLexiconTab("general");
+  }
+  if (elements.lexScopeBook) {
+    elements.lexScopeBook.onchange = () => switchLexiconTab("book");
+  }
+  if (elements.lexScopeGeneral) {
+    elements.lexScopeGeneral.onchange = () => switchLexiconTab("general");
+  }
 
   // Header Chapter Pill & Quick-Nav
   if (elements.headerTocPill) {
@@ -2223,6 +2389,7 @@ function setupEventListeners() {
       elements.teachSelectionBtn.onclick = () => {
         elements.teachSelectionBtn.style.display = "none";
         elements.lexWordInput.value = text.replace(/^[.,!?;:"'()]+|[.,!?;:"'()]+$/g, "");
+        switchLexiconTab("book");
         openDrawer();
         setTimeout(() => elements.lexPhoneticInput.focus(), 150);
       };

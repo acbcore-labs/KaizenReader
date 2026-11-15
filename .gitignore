@@ -1,6 +1,7 @@
 .venv/
 __pycache__/
 *.pyc
+models
 models/*.onnx
 models/*.bin
 data/audio_cache/
@@ -8,4 +9,5 @@ data/cache/
 data/state.json
 data/users.json
 data/users/
+data/saved_pronunciations.json
 .DS_Store

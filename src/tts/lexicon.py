@@ -11,11 +11,15 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Dict, List, Tuple
+import time
+import uuid
+from typing import Dict, List, Optional, Set, Tuple
+from pydantic import BaseModel, Field
 
 from src.config import DATA_DIR
 
 LEXICON_FILE = DATA_DIR / "lexicon.json"
+SAVED_PRONUNCIATIONS_FILE = DATA_DIR / "saved_pronunciations.json"
 
 # Kokoro v1.0 valid phoneme vocabulary (114 symbols)
 KOKORO_VOCAB_CHARS = set(
@@ -175,6 +179,8 @@ DEFAULT_LEXICON: Dict[str, str] = {
     "Zealots": "/zˈɛləts/",
     "Gnosticism": "/nˈɑːstəsɪzəm/",
     "Gnostic": "/nˈɑːstɪk/",
+    "righteous": "/ˈɹaɪtʃəs/",
+    "righteousness": "/ˈɹaɪtʃəsnəs/",
 }
 
 
@@ -240,6 +246,9 @@ _PHONETIC_RULES: List[Tuple[str, str]] = [
     ("dzh", "ʤ"),
     ("eye", "aɪ"),
     ("igh", "aɪ"),
+    ("ahy", "aɪ"),
+    ("ye", "aɪ"),
+    ("uy", "aɪ"),
     ("air", "ɛɹ"),
     ("ear", "ɪɹ"),
     ("oor", "ʊɹ"),
@@ -323,7 +332,10 @@ def _compile_syllable(low: str, stressed: bool) -> str:
                 break
         if not matched:
             ch = low[i]
-            if ch == "u" and not stressed:
+            # Syllabic vowel 'y' at end of syllable or if no other vowels in syllable
+            if ch == "y" and (i == n - 1 or not any(v in low for v in "aeiou")):
+                out.append("aɪ")
+            elif ch == "u" and not stressed:
                 out.append("ə")
             else:
                 out.append(_SINGLE_CHAR_MAP.get(ch, ch))
@@ -333,13 +345,24 @@ def _compile_syllable(low: str, stressed: bool) -> str:
     return re.sub(r'([bdfɡklmnpɹstvz])\1+', r'\1', out_str)
 
 
+class SavedPronunciation(BaseModel):
+    id: str = Field(default_factory=lambda: f"pron_{uuid.uuid4().hex[:8]}")
+    word: str
+    phonetic: str
+    ipa: str
+    book_id: Optional[str] = None
+    book_title: Optional[str] = None
+    created_at: float = Field(default_factory=time.time)
+
+
 class LexiconManager:
-    _instance = None
+    _instance: Optional["LexiconManager"] = None
 
     def __init__(self):
-        self.lexicon: Dict[str, str] = dict(DEFAULT_LEXICON)
-        self._compiled_cache: Dict[str, str] = {}
-        self._pattern: re.Pattern | None = None
+        self._default_lexicon: Dict[str, str] = dict(DEFAULT_LEXICON)
+        self._saved_pronunciations: List[SavedPronunciation] = []
+        self._pattern_cache: Dict[Optional[str], Optional[re.Pattern]] = {}
+        self._lower_map_cache: Dict[Optional[str], Dict[str, str]] = {}
         self.load()
 
     @classmethod
@@ -348,83 +371,291 @@ class LexiconManager:
             cls._instance = cls()
         return cls._instance
 
-    def _rebuild_index(self):
-        self._compiled_cache = {}
-        self._lower_map: Dict[str, str] = {}
-        for word, val in self.lexicon.items():
-            ipa = respelling_to_ipa(val)
-            self._compiled_cache[word] = ipa
-            self._lower_map[word.lower()] = ipa
+    def _invalidate_caches(self):
+        self._pattern_cache.clear()
+        self._lower_map_cache.clear()
 
-        if self.lexicon:
+    def _get_maps_for_book(self, book_id: Optional[str] = None) -> Tuple[Optional[re.Pattern], Dict[str, str]]:
+        norm_bid = book_id.strip() if book_id and book_id.strip() not in ("", "global", "null", "undefined") else None
+        cache_key = norm_bid
+
+        if cache_key in self._pattern_cache and cache_key in self._lower_map_cache:
+            return self._pattern_cache[cache_key], self._lower_map_cache[cache_key]
+
+        lower_map: Dict[str, str] = {}
+        # 1. Base DEFAULT_LEXICON
+        for word, val in self._default_lexicon.items():
+            lower_map[word.lower()] = respelling_to_ipa(val)
+
+        # 2. Global saved overrides
+        for p in self._saved_pronunciations:
+            if not p.book_id or p.book_id in ("global", ""):
+                lower_map[p.word.lower()] = p.ipa
+
+        # 3. Book-specific saved overrides (highest priority)
+        if norm_bid:
+            for p in self._saved_pronunciations:
+                if p.book_id == norm_bid:
+                    lower_map[p.word.lower()] = p.ipa
+
+        if lower_map:
             # Longest keys first so multi-word or longer derivatives match first
-            keys = sorted(self.lexicon.keys(), key=len, reverse=True)
+            keys = sorted(lower_map.keys(), key=len, reverse=True)
             joined = "|".join(re.escape(k) for k in keys)
-            self._pattern = re.compile(rf"\b({joined})\b", re.IGNORECASE)
+            pattern = re.compile(rf"\b({joined})\b", re.IGNORECASE)
         else:
-            self._pattern = None
+            pattern = None
+
+        self._pattern_cache[cache_key] = pattern
+        self._lower_map_cache[cache_key] = lower_map
+        return pattern, lower_map
 
     def load(self):
-        if LEXICON_FILE.exists():
+        self._saved_pronunciations = []
+        # 1. Load from SAVED_PRONUNCIATIONS_FILE
+        if SAVED_PRONUNCIATIONS_FILE.exists():
+            try:
+                raw_data = json.loads(SAVED_PRONUNCIATIONS_FILE.read_text(encoding="utf-8"))
+                if isinstance(raw_data, list):
+                    for item in raw_data:
+                        try:
+                            self._saved_pronunciations.append(SavedPronunciation.model_validate(item))
+                        except Exception:
+                            pass
+            except Exception as e:
+                print(f"[Lexicon] Error loading {SAVED_PRONUNCIATIONS_FILE}: {e}")
+
+        # 2. If no saved pronunciations yet, seed General Library overrides from data/lexicon.json
+        if not self._saved_pronunciations and LEXICON_FILE.exists():
             try:
                 data = json.loads(LEXICON_FILE.read_text(encoding="utf-8"))
-                # Merge user overrides; prefer DEFAULT_LEXICON IPA over legacy
-                # all-caps respellings for built-in words while keeping user custom words
-                for k, v in data.items():
-                    if k in DEFAULT_LEXICON and not is_ipa(v):
-                        # Upgrade legacy respelling for built-in key to verified IPA
-                        continue
-                    self.lexicon[k] = v
+                if isinstance(data, dict):
+                    for k, v in data.items():
+                        ipa_val = respelling_to_ipa(v)
+                        self._saved_pronunciations.append(
+                            SavedPronunciation(
+                                word=k,
+                                phonetic=v,
+                                ipa=ipa_val,
+                                book_id="global",
+                                book_title="General Library",
+                            )
+                        )
+                if self._saved_pronunciations:
+                    self.save()
             except Exception as e:
-                print(f"[Lexicon] Error loading {LEXICON_FILE}: {e}")
-        self._rebuild_index()
-        self.save()
+                print(f"[Lexicon] Error seeding from {LEXICON_FILE}: {e}")
+
+        self._invalidate_caches()
 
     def save(self):
         try:
-            LEXICON_FILE.write_text(
-                json.dumps(self.lexicon, indent=2, ensure_ascii=False),
+            data = [p.model_dump() for p in self._saved_pronunciations]
+            SAVED_PRONUNCIATIONS_FILE.write_text(
+                json.dumps(data, indent=2, ensure_ascii=False),
                 encoding="utf-8",
             )
         except Exception as e:
-            print(f"[Lexicon] Error saving {LEXICON_FILE}: {e}")
+            print(f"[Lexicon] Error saving {SAVED_PRONUNCIATIONS_FILE}: {e}")
 
-    def add_override(self, word: str, phonetic: str):
+    def add_override(
+        self,
+        word: str,
+        phonetic: str,
+        book_id: Optional[str] = None,
+        book_title: Optional[str] = None,
+        scope: Optional[str] = None,
+    ) -> Dict:
         w = word.strip()
         p = phonetic.strip()
         if not w or not p:
-            return
-        self.lexicon[w] = p
-        self._rebuild_index()
-        self.save()
+            return {}
 
-    def remove_override(self, word: str):
-        if word in self.lexicon:
-            del self.lexicon[word]
-            self._rebuild_index()
+        # If scope is explicitly general or no book_id provided, treat as global
+        if scope == "general" or not book_id:
+            norm_bid = "global"
+            b_title = "General Library"
+        else:
+            norm_bid = book_id.strip() if book_id.strip() not in ("", "global", "null", "undefined") else "global"
+            b_title = book_title if norm_bid != "global" else "General Library"
+
+        ipa_val = respelling_to_ipa(p)
+
+        target = None
+        for item in self._saved_pronunciations:
+            item_bid = item.book_id if item.book_id not in ("", None) else "global"
+            if item.word.lower() == w.lower() and item_bid == norm_bid:
+                target = item
+                break
+
+        if target:
+            target.word = w
+            target.phonetic = p
+            target.ipa = ipa_val
+            if b_title:
+                target.book_title = b_title
+            target.created_at = time.time()
+            res = target.model_dump()
+        else:
+            new_item = SavedPronunciation(
+                word=w,
+                phonetic=p,
+                ipa=ipa_val,
+                book_id=norm_bid,
+                book_title=b_title,
+                created_at=time.time(),
+            )
+            self._saved_pronunciations.append(new_item)
+            res = new_item.model_dump()
+
+        self._invalidate_caches()
+        self.save()
+        return res
+
+    def pull_to_book(
+        self,
+        word: str,
+        book_id: str,
+        book_title: Optional[str] = None,
+        phonetic: Optional[str] = None,
+    ) -> Dict:
+        """Pull a general override into this specific book, allowing book-level precedence."""
+        w = word.strip().lower()
+        general_entry = None
+        for p in self._saved_pronunciations:
+            if p.word.lower() == w and (not p.book_id or p.book_id in ("global", "")):
+                general_entry = p
+                break
+
+        chosen_phonetic = phonetic.strip() if phonetic and phonetic.strip() else (
+            general_entry.phonetic if general_entry else self._default_lexicon.get(word, word)
+        )
+        return self.add_override(
+            word=word,
+            phonetic=chosen_phonetic,
+            book_id=book_id,
+            book_title=book_title,
+            scope="book",
+        )
+
+    def remove_override(
+        self,
+        word: str,
+        book_id: Optional[str] = None,
+        scope: Optional[str] = None,
+    ) -> int:
+        w = word.strip().lower()
+        norm_bid = book_id.strip() if book_id and book_id.strip() not in ("", "global", "null", "undefined") else None
+
+        initial_count = len(self._saved_pronunciations)
+        if scope == "general":
+            self._saved_pronunciations = [
+                p for p in self._saved_pronunciations
+                if not (p.word.lower() == w and (not p.book_id or p.book_id in ("global", "")))
+            ]
+        elif scope == "book" and norm_bid:
+            self._saved_pronunciations = [
+                p for p in self._saved_pronunciations
+                if not (p.word.lower() == w and p.book_id == norm_bid)
+            ]
+        elif norm_bid:
+            self._saved_pronunciations = [
+                p for p in self._saved_pronunciations
+                if not (p.word.lower() == w and p.book_id == norm_bid)
+            ]
+        else:
+            self._saved_pronunciations = [
+                p for p in self._saved_pronunciations
+                if p.word.lower() != w
+            ]
+
+        deleted_count = initial_count - len(self._saved_pronunciations)
+        if deleted_count > 0:
+            self._invalidate_caches()
             self.save()
+        return deleted_count
+
+    def get_lexicon_review(self, book_id: Optional[str] = None) -> Dict:
+        """Return structured review of book-specific vs general overrides with precedence tracking."""
+        norm_bid = book_id.strip() if book_id and book_id.strip() not in ("", "global", "null", "undefined") else None
+
+        book_overrides = []
+        general_overrides = []
+
+        for p in self._saved_pronunciations:
+            is_gen = not p.book_id or p.book_id in ("global", "")
+            if is_gen:
+                general_overrides.append(p.model_dump())
+            elif norm_bid and p.book_id == norm_bid:
+                book_overrides.append(p.model_dump())
+            elif not norm_bid:
+                book_overrides.append(p.model_dump())
+
+        book_words = {b["word"].lower(): b for b in book_overrides}
+        general_words = {g["word"].lower(): g for g in general_overrides}
+
+        for b in book_overrides:
+            b["overrides_general"] = b["word"].lower() in general_words
+            if b["overrides_general"]:
+                b["general_phonetic"] = general_words[b["word"].lower()]["phonetic"]
+            b["is_current_book"] = True
+
+        for g in general_overrides:
+            g["overridden_by_book"] = g["word"].lower() in book_words
+            if g["overridden_by_book"]:
+                g["book_phonetic"] = book_words[g["word"].lower()]["phonetic"]
+            g["is_current_book"] = False
+
+        book_overrides.sort(key=lambda x: x["word"].lower())
+        general_overrides.sort(key=lambda x: x["word"].lower())
+
+        return {
+            "book_id": norm_bid,
+            "book_overrides": book_overrides,
+            "general_overrides": general_overrides,
+            "total_book": len(book_overrides),
+            "total_general": len(general_overrides),
+            "items": book_overrides + general_overrides,
+        }
+
+    def get_saved_overrides(self, book_id: Optional[str] = None) -> List[Dict]:
+        """Return user-saved pronunciations filtered by book_id."""
+        review = self.get_lexicon_review(book_id)
+        if book_id and book_id != "all":
+            # Book overrides first, then general overrides
+            return review["book_overrides"] + review["general_overrides"]
+        return review["items"]
+
+        # Sort: Current book overrides first, then global, then alphabetical by word
+        results.sort(key=lambda x: (0 if x.get("is_current_book") else 1, x["word"].lower()))
+        return results
 
     def get_all(self) -> Dict[str, str]:
-        return dict(self.lexicon)
+        """Return combined legacy dictionary of built-in + all overrides."""
+        res = dict(self._default_lexicon)
+        for p in self._saved_pronunciations:
+            res[p.word] = p.phonetic
+        return res
 
-    def get_ipa(self, word: str) -> str | None:
-        return self._lower_map.get(word.lower())
+    def get_ipa(self, word: str, book_id: Optional[str] = None) -> Optional[str]:
+        _, lower_map = self._get_maps_for_book(book_id)
+        return lower_map.get(word.lower())
 
-    def split_with_ipa(self, text: str) -> List[Tuple[str, bool]]:
-        """Split text into [(segment, is_ipa), ...] chunks.
+    def split_with_ipa(self, text: str, book_id: Optional[str] = None) -> List[Tuple[str, bool]]:
+        """Split text into [(segment, is_ipa), ...] chunks using book-aware overrides."""
+        if not text:
+            return []
 
-        Non-lexicon segments stay as plain English text for espeak-ng, while
-        lexicon-matched terms become exact IPA phoneme strings.
-        """
-        if not text or not self._pattern:
-            return [(text, False)] if text else []
+        pattern, lower_map = self._get_maps_for_book(book_id)
+        if not pattern:
+            return [(text, False)]
 
         segments: List[Tuple[str, bool]] = []
         last_idx = 0
-        for m in self._pattern.finditer(text):
+        for m in pattern.finditer(text):
             if m.start() > last_idx:
                 segments.append((text[last_idx:m.start()], False))
-            ipa = self._lower_map.get(m.group(0).lower())
+            ipa = lower_map.get(m.group(0).lower())
             if ipa:
                 segments.append((ipa, True))
             else:
@@ -434,10 +665,13 @@ class LexiconManager:
             segments.append((text[last_idx:], False))
         return segments
 
-    def apply(self, text: str) -> str:
+    def apply(self, text: str, book_id: Optional[str] = None) -> str:
         """Legacy plain-text replacement (kept for compatibility/inspection)."""
-        if not text or not self._pattern:
-            return text or ""
-        return self._pattern.sub(
-            lambda m: self._lower_map.get(m.group(0).lower(), m.group(0)), text
+        if not text:
+            return ""
+        pattern, lower_map = self._get_maps_for_book(book_id)
+        if not pattern:
+            return text
+        return pattern.sub(
+            lambda m: lower_map.get(m.group(0).lower(), m.group(0)), text
         )

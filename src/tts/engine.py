@@ -142,7 +142,12 @@ class TTSEngine:
             return "en-gb"
         return DEFAULT_LANG
 
-    def build_phonemes(self, raw_text: str, lang: str = DEFAULT_LANG) -> Tuple[str, List[Tuple[str, str]]]:
+    def build_phonemes(
+        self,
+        raw_text: str,
+        lang: str = DEFAULT_LANG,
+        book_id: Optional[str] = None,
+    ) -> Tuple[str, List[Tuple[str, str]]]:
         """Single-pass normalization + hybrid IPA phonemization.
 
         Returns (full_phoneme_string, [(display_word, phoneme_chunk), ...])
@@ -161,13 +166,13 @@ class TTSEngine:
         last = 0
         for m in _INLINE_IPA_RE.finditer(norm_text):
             if m.start() > last:
-                tokens_with_ipa.extend(lex.split_with_ipa(norm_text[last:m.start()]))
+                tokens_with_ipa.extend(lex.split_with_ipa(norm_text[last:m.start()], book_id=book_id))
             ipa = sanitize_ipa(m.group(1))
             if ipa:
                 tokens_with_ipa.append((ipa, True))
             last = m.end()
         if last < len(norm_text):
-            tokens_with_ipa.extend(lex.split_with_ipa(norm_text[last:]))
+            tokens_with_ipa.extend(lex.split_with_ipa(norm_text[last:], book_id=book_id))
 
         phoneme_parts: List[str] = []
         for seg, is_ipa_seg in tokens_with_ipa:
@@ -218,6 +223,7 @@ class TTSEngine:
         lang: Optional[str] = None,
         node_type: str = "p",
         is_preempt: bool = True,
+        book_id: Optional[str] = None,
     ) -> Tuple[bytes, float, int, List[Dict[str, float | str]]]:
         """Synthesize text to in-memory WAV audio bytes, duration, sample rate, and word timings."""
         if is_preempt:
@@ -228,7 +234,7 @@ class TTSEngine:
             return wav, dur, sr, []
 
         resolved_lang = lang or self._voice_lang(voice)
-        phonemes, _ = self.build_phonemes(text, lang=resolved_lang)
+        phonemes, _ = self.build_phonemes(text, lang=resolved_lang, book_id=book_id)
         if not phonemes:
             wav, dur, sr = self._create_silent_wav(0.1)
             return wav, dur, sr, []
@@ -340,7 +346,7 @@ class TTSEngine:
         sf.write(buf, samples, sample_rate, format="WAV", subtype="PCM_16")
         return buf.getvalue(), duration, sample_rate
 
-    def queue_lookahead(self, items: List[Tuple[str, str, float, str]]):
+    def queue_lookahead(self, items: List[Tuple[str, str, float, str] | Tuple[str, str, float, str, Optional[str]]]):
         """Queue upcoming sentences for background synthesis; preempted by user clicks."""
         with self._lookahead_lock:
             my_epoch = self._epoch
@@ -361,9 +367,13 @@ class TTSEngine:
                     break
                 item = self._lookahead_queue.pop(0)
 
-            text, voice, speed, node_type = item
+            if len(item) == 5:
+                text, voice, speed, node_type, book_id = item
+            else:
+                text, voice, speed, node_type = item
+                book_id = None
             try:
-                self.synthesize(text, voice=voice, speed=speed, node_type=node_type, is_preempt=False)
+                self.synthesize(text, voice=voice, speed=speed, node_type=node_type, is_preempt=False, book_id=book_id)
             except Exception:
                 pass
             time.sleep(0.015)

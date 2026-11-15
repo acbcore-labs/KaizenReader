@@ -278,25 +278,53 @@ def list_voices():
 class LexiconEntry(BaseModel):
     word: str
     phonetic: str
+    book_id: Optional[str] = None
+    book_title: Optional[str] = None
+    scope: Optional[str] = None  # "book" or "general"
+
+
+class PullLexiconRequest(BaseModel):
+    word: str
+    book_id: str
+    book_title: Optional[str] = None
+    phonetic: Optional[str] = None
 
 
 @app.get("/api/lexicon")
-def get_lexicon():
-    return LexiconManager.get_instance().get_all()
+def get_lexicon(book_id: Optional[str] = None):
+    return LexiconManager.get_instance().get_lexicon_review(book_id=book_id)
 
 
 @app.post("/api/lexicon")
 def add_lexicon_entry(entry: LexiconEntry):
-    LexiconManager.get_instance().add_override(entry.word, entry.phonetic)
+    saved = LexiconManager.get_instance().add_override(
+        word=entry.word,
+        phonetic=entry.phonetic,
+        book_id=entry.book_id,
+        book_title=entry.book_title,
+        scope=entry.scope,
+    )
     get_engine().clear_cache()
-    return {"success": True, "word": entry.word, "phonetic": entry.phonetic}
+    return {"success": True, "entry": saved}
+
+
+@app.post("/api/lexicon/pull")
+def pull_lexicon_entry(req: PullLexiconRequest):
+    saved = LexiconManager.get_instance().pull_to_book(
+        word=req.word,
+        book_id=req.book_id,
+        book_title=req.book_title,
+        phonetic=req.phonetic,
+    )
+    get_engine().clear_cache()
+    return {"success": True, "entry": saved}
 
 
 @app.delete("/api/lexicon/{word}")
-def delete_lexicon_entry(word: str):
-    LexiconManager.get_instance().remove_override(word)
+def delete_lexicon_entry(word: str, book_id: Optional[str] = None, scope: Optional[str] = None):
+    deleted = LexiconManager.get_instance().remove_override(word, book_id=book_id, scope=scope)
     get_engine().clear_cache()
-    return {"success": True, "deleted": word}
+    return {"success": True, "deleted": word, "count": deleted}
 
 
 @app.get("/api/state")
@@ -507,11 +535,12 @@ def synthesize_sentence(
     speed: float = DEFAULT_SPEED,
     sentence_id: Optional[str] = None,
     node_type: str = "p",
+    book_id: Optional[str] = None,
 ):
     """Synthesize sentence audio in-memory with zero disk writes and word-level timings."""
     engine = get_engine()
     wav_bytes, duration, sample_rate, word_timings = engine.synthesize(
-        text, voice=voice, speed=speed, node_type=node_type, is_preempt=True
+        text, voice=voice, speed=speed, node_type=node_type, is_preempt=True, book_id=book_id
     )
 
     headers = {
@@ -532,6 +561,7 @@ class LookaheadItem(BaseModel):
     voice: str = DEFAULT_VOICE
     speed: float = DEFAULT_SPEED
     node_type: str = "p"
+    book_id: Optional[str] = None
 
 
 class LookaheadRequest(BaseModel):
@@ -541,7 +571,7 @@ class LookaheadRequest(BaseModel):
 @app.post("/api/tts/lookahead")
 def queue_lookahead(req: LookaheadRequest):
     engine = get_engine()
-    tuples = [(it.text, it.voice, float(it.speed), it.node_type) for it in req.items]
+    tuples = [(it.text, it.voice, float(it.speed), it.node_type, it.book_id) for it in req.items]
     engine.queue_lookahead(tuples)
     return {"queued": len(tuples)}
 
