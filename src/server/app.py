@@ -1,18 +1,21 @@
-"""KaizenReader High-Performance Streaming Server.
+"""KaizenReader High-Performance Streaming & Sovereign Vault Server.
 
-Provides RESTful endpoints for document ingestion, voice switching,
-hybrid IPA lexicon management, persistent reading state, and WebSocket sync.
+Provides RESTful endpoints for document ingestion, Quad-Engine speech synthesis
+(Kokoro-82M FP16 + Apple Neural TTS), `.m4a` hardware chapter sprite compilation,
+`.kzn` Sovereign Cartridge export/import, inline phonetic inspection, local TLS
+certificate provisioning, persistent reading state, and WebSocket sync.
 """
 from pathlib import Path
 import json
+import re
 import shutil
 import threading
 import time
 import uuid
 from typing import Dict, List, Optional
 
-from fastapi import FastAPI, UploadFile, File, HTTPException, WebSocket, WebSocketDisconnect
-from fastapi.responses import Response
+from fastapi import FastAPI, UploadFile, File, HTTPException, WebSocket, WebSocketDisconnect, Query
+from fastapi.responses import Response, StreamingResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -21,13 +24,23 @@ from src.config import (
     ROOT_DIR, UPLOAD_DIR, STATE_FILE, DEFAULT_PORT,
     DEFAULT_VOICE, DEFAULT_SPEED, SMART_AUDIO_MODE, get_local_ip
 )
+from src.certs import ensure_local_tls_certs, get_tls_info, CA_CERT_PATH
 from src.tts.engine import TTSEngine
-from src.tts.lexicon import LexiconManager
+from src.tts.apple_engine import AppleTTSEngine, build_apple_speech_payload
+from src.tts.lexicon import LexiconManager, respelling_to_ipa, is_ipa
+from src.tts.normalizer import normalize_text_for_tts
+from src.tts.sprite_compiler import (
+    compile_chapter_sprite,
+    export_kzn_cartridge,
+    get_book_packed_chapters,
+    get_cached_sprite_paths,
+    import_kzn_cartridge,
+)
 from src.parsers import parse_document
 from src.users import UserManager, UserProfile, UserMemory, NoteEntry
 from src.parsers.base import Document
 
-app = FastAPI(title="KaizenReader Core", version="2.0.0")
+app = FastAPI(title="KaizenReader Atelier & Acoustic Chronograph Core", version="3.0.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -35,7 +48,14 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
-    expose_headers=["X-Audio-Duration", "X-Sample-Rate", "X-Sentence-ID", "X-Word-Timings"],
+    expose_headers=[
+        "X-Audio-Duration",
+        "X-Sample-Rate",
+        "X-Sentence-ID",
+        "X-Word-Timings",
+        "X-Engine-Used",
+        "X-Sprite-Format",
+    ],
 )
 
 _loaded_documents: Dict[str, Document] = {}
@@ -46,11 +66,14 @@ def get_engine() -> TTSEngine:
     return TTSEngine.get_instance()
 
 
+def get_apple_engine() -> AppleTTSEngine:
+    return AppleTTSEngine.get_instance()
+
+
 def index_existing_books():
     """Load user uploaded books FIRST, then sample books (tagged is_sample=True)."""
     supported = {".epub", ".pdf", ".md", ".markdown", ".txt", ".docx", ".html", ".htm"}
 
-    # 1. Index user uploaded books first (most recently added/modified first)
     if UPLOAD_DIR.exists():
         for f in sorted(UPLOAD_DIR.glob("*.*"), key=lambda p: p.stat().st_mtime, reverse=True):
             if f.suffix.lower() not in supported:
@@ -66,7 +89,6 @@ def index_existing_books():
             except Exception as e:
                 print(f"[Library] Could not parse uploaded {f.name}: {e}")
 
-    # 2. Index sample/demo books
     sample_dir = ROOT_DIR / "sample_books"
     if sample_dir.exists():
         for f in sorted(sample_dir.glob("*.*")):
@@ -86,12 +108,10 @@ def index_existing_books():
 
 @app.on_event("startup")
 def startup_event():
-    # 1. Index library books immediately (takes <20ms with AST disk cache)
     index_existing_books()
-    # 2. Ensure initial user profile & memory are ready
     UserManager.get_instance()
-    # 3. Load Kokoro TTS model asynchronously
     threading.Thread(target=get_engine, daemon=True).start()
+    threading.Thread(target=get_apple_engine, daemon=True).start()
 
 
 # ----------------- User Profiles, Memory & Notes ----------------- #
@@ -203,9 +223,7 @@ class ClearMemoryRequest(BaseModel):
 
 @app.post("/api/memory/clear")
 def clear_memory(req: ClearMemoryRequest = ClearMemoryRequest()):
-    # 1. Clear in-memory TTS engine cache
     get_engine().clear_cache()
-    # 2. Clear disk audio cache & run GC
     um = UserManager.get_instance()
     result = um.clear_memory_cache(clear_ast=req.clear_ast)
     return result
@@ -250,15 +268,22 @@ def delete_note(note_id: str):
     return {"success": True, "deleted": note_id}
 
 
-# ----------------- REST Endpoints ----------------- #
+# ----------------- Status, Voices, TLS & Phonetics Lens ----------------- #
 
 @app.get("/api/status")
 def get_status():
     um = UserManager.get_instance()
     user = um.get_active_user()
+    tls_info = get_tls_info(DEFAULT_PORT)
     return {
         "status": "online",
-        "engine": "Kokoro-82M FP16 (ONNX Runtime / Apple Silicon M1)",
+        "version": "3.0.0",
+        "engine": "Quad-Engine (Kokoro-82M FP16 + Apple Neural TTS + Hardware Sprite Deck)",
+        "engines_available": [
+            {"id": "kokoro_auto", "label": "Kokoro-82M Studio (Vault + M1 Live)"},
+            {"id": "apple_ios_neural", "label": "Apple Neural Live (On-Device ANE / SSML)"},
+            {"id": "apple_mac_neural", "label": "Apple Neural Foundry (macOS Studio)"},
+        ],
         "default_voice": user.voice or DEFAULT_VOICE,
         "default_speed": user.speed or DEFAULT_SPEED,
         "active_user": user.username,
@@ -266,13 +291,131 @@ def get_status():
         "local_ip": get_local_ip(),
         "port": DEFAULT_PORT,
         "companion_url": f"http://{get_local_ip()}:{DEFAULT_PORT}",
+        "https_companion_url": tls_info["https_url"],
+        "tls": tls_info,
         "total_books_loaded": len(_loaded_documents),
     }
 
 
+@app.get("/api/tls-info")
+def tls_status():
+    return get_tls_info(DEFAULT_PORT)
+
+
+@app.get("/api/trust-profile")
+def download_local_ca_cert():
+    """Generate (if needed) and serve the local Root CA certificate so iOS can trust HTTPS."""
+    _, _, ca_path = ensure_local_tls_certs()
+    return FileResponse(
+        path=str(ca_path),
+        media_type="application/x-x509-ca-cert",
+        filename="kaizen-local-root-ca.pem",
+    )
+
+
+GDRIVE_CONFIG_FILE = ROOT_DIR / "data" / "gdrive_config.json"
+
+
+class GDriveConfigUpdate(BaseModel):
+    client_id: str = ""
+    folder_name: str = "KaizenReader"
+
+
+@app.get("/api/gdrive/config")
+def get_gdrive_config():
+    if GDRIVE_CONFIG_FILE.exists():
+        try:
+            return json.loads(GDRIVE_CONFIG_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    return {"client_id": "", "folder_name": "KaizenReader"}
+
+
+@app.post("/api/gdrive/config")
+def save_gdrive_config(req: GDriveConfigUpdate):
+    GDRIVE_CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "client_id": req.client_id.strip(),
+        "folder_name": req.folder_name.strip() or "KaizenReader",
+    }
+    GDRIVE_CONFIG_FILE.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    return {"success": True, **payload}
+
+
 @app.get("/api/voices")
-def list_voices():
-    return get_engine().get_available_voices()
+def list_voices(include_apple: bool = True):
+    kokoro_voices = get_engine().get_available_voices()
+    for v in kokoro_voices:
+        v["engine"] = "kokoro"
+    if not include_apple:
+        return kokoro_voices
+    apple_voices = get_apple_engine().get_available_voices()
+    return kokoro_voices + apple_voices
+
+
+@app.get("/api/apple-voices")
+def list_apple_voices():
+    return get_apple_engine().get_available_voices()
+
+
+@app.get("/api/phonetics/inspect")
+def inspect_word_phonetics(word: str, context: Optional[str] = None):
+    """Inspect a word or phrase for the Floating Inline Phonetic & IPA Lens.
+
+    Returns compiled Kokoro IPA, Apple SSML payload, syllable breakdown for
+    interactive stress shifting, and current Lexicon override status.
+    """
+    clean_word = word.strip().strip(".,!?;:\"'()[]{}")
+    if not clean_word:
+        raise HTTPException(status_code=400, detail="Word cannot be empty")
+
+    lex = LexiconManager.get_instance()
+    existing_override = lex.get_all().get(clean_word) or lex.get_ipa(clean_word)
+
+    engine = get_engine()
+    kokoro_ipa, _ = engine.build_phonemes(clean_word)
+    apple_spoken, apple_ssml = build_apple_speech_payload(context or clean_word)
+
+    # Generate interactive syllable candidates for 1-tap stress shifting in the UI
+    syllables = _split_word_into_syllables(clean_word)
+    stress_variants = []
+    for idx in range(len(syllables)):
+        parts = [
+            s.upper() if i == idx else s.lower()
+            for i, s in enumerate(syllables)
+        ]
+        respelling = "-".join(parts)
+        compiled_ipa = respelling_to_ipa(respelling)
+        stress_variants.append(
+            {
+                "stressed_index": idx,
+                "respelling": respelling,
+                "ipa": f"/{compiled_ipa}/" if compiled_ipa else "",
+            }
+        )
+
+    return {
+        "word": clean_word,
+        "has_override": existing_override is not None,
+        "override_value": existing_override,
+        "kokoro_ipa": f"/{kokoro_ipa}/" if kokoro_ipa else "",
+        "apple_spoken": apple_spoken,
+        "apple_ssml": apple_ssml,
+        "syllables": syllables,
+        "stress_variants": stress_variants,
+        "normalized_context": normalize_text_for_tts(context) if context else normalize_text_for_tts(clean_word),
+    }
+
+
+def _split_word_into_syllables(word: str) -> List[str]:
+    """Heuristic vowel-nucleus syllable splitter for interactive stress pills."""
+    w = re.sub(r"[^a-zA-Z]", "", word)
+    if len(w) <= 3:
+        return [w] if w else [word]
+    chunks = re.findall(r"[^aeiouyAEIOUY]*[aeiouyAEIOUY]+(?:[^aeiouyAEIOUY](?=[aeiouyAEIOUY])|[^aeiouyAEIOUY]*$)", w)
+    if not chunks:
+        return [w]
+    return chunks
 
 
 class LexiconEntry(BaseModel):
@@ -289,7 +432,12 @@ def get_lexicon():
 def add_lexicon_entry(entry: LexiconEntry):
     LexiconManager.get_instance().add_override(entry.word, entry.phonetic)
     get_engine().clear_cache()
-    return {"success": True, "word": entry.word, "phonetic": entry.phonetic}
+    return {
+        "success": True,
+        "word": entry.word,
+        "phonetic": entry.phonetic,
+        "compiled_ipa": f"/{respelling_to_ipa(entry.phonetic)}/",
+    }
 
 
 @app.delete("/api/lexicon/{word}")
@@ -319,8 +467,10 @@ def save_reading_state(update: ReadingStateUpdate):
     )
 
 
+# ----------------- Library, Books, Chapter Sprites & Cartridges ----------------- #
+
 @app.get("/api/library")
-def get_library():
+def get_library(voice: str = DEFAULT_VOICE, speed: float = DEFAULT_SPEED):
     um = UserManager.get_instance()
     state_data = um.get_user_state()
     positions = state_data.get("positions", {})
@@ -339,6 +489,9 @@ def get_library():
             if progress_pct > 100:
                 progress_pct = 100
 
+        packed_info = get_book_packed_chapters(doc, voice=voice, speed=speed)
+        packed_indices = [c["chapter_index"] for c in packed_info if c["packed"]]
+
         items.append({
             "id": doc.id,
             "title": doc.title,
@@ -354,9 +507,10 @@ def get_library():
             "last_chapter_index": ch_idx,
             "last_sentence_index": sent_idx,
             "updated_at": pos.get("updated_at"),
+            "packed_chapters": packed_indices,
+            "packed_count": len(packed_indices),
         })
 
-    # Sort: User uploaded books first (last_read first), then sample demos at the bottom
     items.sort(key=lambda b: (
         1 if b["is_sample"] else 0,
         0 if b["is_last_read"] else 1,
@@ -374,20 +528,16 @@ def delete_book(book_id: str):
 
     doc = _loaded_documents[book_id]
 
-    # If it is an uploaded file in data/uploads, unlink it from disk
     if doc.file_path:
         file_p = Path(doc.file_path)
         if file_p.exists() and UPLOAD_DIR in file_p.parents:
             try:
                 file_p.unlink()
-                print(f"[Library] Removed uploaded file from disk: {file_p.name}")
-            except Exception as e:
-                print(f"[Library] Could not delete file {file_p}: {e}")
+            except Exception:
+                pass
 
-    # Remove from memory index
     del _loaded_documents[book_id]
 
-    # Clean up AST cache if present
     from src.config import AST_CACHE_DIR
     ast_cache = AST_CACHE_DIR / f"ast_{book_id}.json"
     if ast_cache.exists():
@@ -396,7 +546,6 @@ def delete_book(book_id: str):
         except Exception:
             pass
 
-    # Clean up state positions in user manager and root state
     um = UserManager.get_instance()
     active_user = um.get_active_user()
     from src.config import USERS_DIR
@@ -423,6 +572,33 @@ def delete_book(book_id: str):
 @app.post("/api/upload")
 async def upload_document(file: UploadFile = File(...)):
     suffix = Path(file.filename or "").suffix.lower()
+    if suffix == ".kzn":
+        raw_bytes = await file.read()
+        try:
+            doc, manifest = import_kzn_cartridge(raw_bytes)
+            doc.is_sample = False
+            doc.created_at = time.time()
+            _loaded_documents[doc.id] = doc
+            um = UserManager.get_instance()
+            um.update_user_state(book_id=doc.id, chapter_index=0, sentence_index=0)
+            return {
+                "success": True,
+                "is_cartridge": True,
+                "manifest": manifest,
+                "document": {
+                    "id": doc.id,
+                    "title": doc.title,
+                    "author": doc.author,
+                    "file_format": doc.file_format,
+                    "chapters_count": len(doc.chapters),
+                    "total_words": doc.total_words,
+                    "total_sentences": doc.total_sentences,
+                    "is_sample": False,
+                },
+            }
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Invalid .kzn cartridge: {str(e)}")
+
     if suffix not in {".epub", ".pdf", ".md", ".markdown", ".txt", ".docx", ".html", ".htm"}:
         raise HTTPException(status_code=400, detail=f"Unsupported format: {suffix}")
 
@@ -436,13 +612,11 @@ async def upload_document(file: UploadFile = File(...)):
         doc.created_at = time.time()
 
         if doc.id in _loaded_documents:
-            # Duplicate content already in library; remove redundant file
             dest_path.unlink(missing_ok=True)
             doc = _loaded_documents[doc.id]
         else:
             _loaded_documents[doc.id] = doc
 
-        # Set as last_book_id in state and user memory
         um = UserManager.get_instance()
         um.update_user_state(book_id=doc.id, chapter_index=0, sentence_index=0)
 
@@ -470,6 +644,132 @@ def get_book(book_id: str):
     if book_id not in _loaded_documents:
         raise HTTPException(status_code=404, detail="Book not found")
     return _loaded_documents[book_id].model_dump()
+
+
+@app.get("/api/book/{book_id}/pack-status")
+def get_book_pack_status(book_id: str, voice: str = DEFAULT_VOICE, speed: float = DEFAULT_SPEED):
+    if book_id not in _loaded_documents:
+        raise HTTPException(status_code=404, detail="Book not found")
+    doc = _loaded_documents[book_id]
+    chapters_status = get_book_packed_chapters(doc, voice=voice, speed=speed)
+    total_bytes = sum(int(c["size_bytes"]) for c in chapters_status)
+    packed_count = sum(1 for c in chapters_status if c["packed"])
+    return {
+        "book_id": book_id,
+        "voice": voice,
+        "speed": speed,
+        "total_chapters": len(doc.chapters),
+        "packed_chapters_count": packed_count,
+        "total_sprite_bytes": total_bytes,
+        "chapters": chapters_status,
+    }
+
+
+@app.get("/api/book/{book_id}/chapter/{ch_idx}/timings")
+def get_chapter_sprite_timings(
+    book_id: str,
+    ch_idx: int,
+    voice: str = DEFAULT_VOICE,
+    speed: float = DEFAULT_SPEED,
+    compile_if_missing: bool = True,
+):
+    if book_id not in _loaded_documents:
+        raise HTTPException(status_code=404, detail="Book not found")
+    doc = _loaded_documents[book_id]
+    if ch_idx < 0 or ch_idx >= len(doc.chapters):
+        raise HTTPException(status_code=404, detail="Chapter index out of range")
+
+    audio_p, timings_p = get_cached_sprite_paths(book_id, ch_idx, voice, speed)
+    if not (audio_p.exists() and timings_p.exists()):
+        if not compile_if_missing:
+            raise HTTPException(status_code=404, detail="Sprite not compiled yet")
+        _, _, timings_data = compile_chapter_sprite(doc, ch_idx, voice=voice, speed=speed)
+        return timings_data
+
+    return json.loads(timings_p.read_text(encoding="utf-8"))
+
+
+@app.get("/api/book/{book_id}/chapter/{ch_idx}/sprite")
+def get_chapter_sprite_audio(
+    book_id: str,
+    ch_idx: int,
+    voice: str = DEFAULT_VOICE,
+    speed: float = DEFAULT_SPEED,
+):
+    """Compile (if needed) and stream the hardware-decoded `.m4a` chapter audio sprite."""
+    if book_id not in _loaded_documents:
+        raise HTTPException(status_code=404, detail="Book not found")
+    doc = _loaded_documents[book_id]
+    if ch_idx < 0 or ch_idx >= len(doc.chapters):
+        raise HTTPException(status_code=404, detail="Chapter index out of range")
+
+    audio_p, timings_p, timings_data = compile_chapter_sprite(doc, ch_idx, voice=voice, speed=speed)
+    media_type = "audio/mp4" if audio_p.suffix == ".m4a" else "audio/wav"
+    headers = {
+        "X-Audio-Duration": str(timings_data.get("total_duration", 0.0)),
+        "X-Sprite-Format": audio_p.suffix.lstrip("."),
+        "X-Engine-Used": str(timings_data.get("engine", "kokoro_fp16")),
+        "Accept-Ranges": "bytes",
+    }
+    return FileResponse(path=str(audio_p), media_type=media_type, headers=headers)
+
+
+@app.get("/api/book/{book_id}/cartridge")
+def download_book_cartridge(
+    book_id: str,
+    voice: str = DEFAULT_VOICE,
+    speed: float = DEFAULT_SPEED,
+    chapters: Optional[str] = Query(default=None, description="Comma-separated chapter indices to include"),
+    compile_missing: bool = False,
+):
+    """Export a `.kzn` Sovereign Cartridge ZIP archive for AirDrop / USB Files app transfer."""
+    if book_id not in _loaded_documents:
+        raise HTTPException(status_code=404, detail="Book not found")
+    doc = _loaded_documents[book_id]
+
+    ch_list: Optional[List[int]] = None
+    if chapters:
+        ch_list = [int(x.strip()) for x in chapters.split(",") if x.strip().isdigit()]
+
+    um = UserManager.get_instance()
+    state_data = um.get_user_state()
+    bookmark = state_data.get("positions", {}).get(book_id, {"chapter_index": 0, "sentence_index": 0})
+    notes = [n.model_dump() for n in um.get_notes(book_id=book_id)]
+
+    cartridge_bytes = export_kzn_cartridge(
+        doc,
+        voice=voice,
+        speed=speed,
+        chapters_to_pack=ch_list,
+        compile_missing=compile_missing,
+        state_bookmark=bookmark,
+        notes=notes,
+    )
+    safe_title = "".join(c if c.isalnum() or c in "-_" else "_" for c in doc.title).strip("_") or doc.id
+    filename = f"{safe_title}_{doc.id}.kzn"
+    return Response(
+        content=cartridge_bytes,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@app.post("/api/cartridge/import")
+async def import_cartridge_endpoint(file: UploadFile = File(...)):
+    raw_bytes = await file.read()
+    try:
+        doc, manifest = import_kzn_cartridge(raw_bytes)
+        doc.is_sample = False
+        doc.created_at = time.time()
+        _loaded_documents[doc.id] = doc
+        return {
+            "success": True,
+            "manifest": manifest,
+            "book_id": doc.id,
+            "title": doc.title,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @app.get("/api/book/{book_id}/search")
@@ -500,6 +800,8 @@ def search_book(book_id: str, q: str):
     return matches
 
 
+# ----------------- Real-Time Sentence TTS (Kokoro & Apple Neural) ----------------- #
+
 @app.api_route("/api/tts/sentence", methods=["GET", "HEAD"])
 def synthesize_sentence(
     text: str,
@@ -507,23 +809,57 @@ def synthesize_sentence(
     speed: float = DEFAULT_SPEED,
     sentence_id: Optional[str] = None,
     node_type: str = "p",
+    engine_mode: Optional[str] = None,
 ):
-    """Synthesize sentence audio in-memory with zero disk writes and word-level timings."""
-    engine = get_engine()
-    wav_bytes, duration, sample_rate, word_timings = engine.synthesize(
-        text, voice=voice, speed=speed, node_type=node_type, is_preempt=True
-    )
+    """Synthesize sentence audio in-memory via Kokoro-82M or Apple Neural TTS with word timings."""
+    use_apple = voice.startswith("apple:") or (engine_mode == "apple_mac_neural")
+    if use_apple:
+        apple_eng = get_apple_engine()
+        wav_bytes, duration, sample_rate, word_timings = apple_eng.synthesize(
+            text, voice=voice, speed=speed, node_type=node_type
+        )
+        engine_used = "apple_mac_neural"
+    else:
+        eng = get_engine()
+        wav_bytes, duration, sample_rate, word_timings = eng.synthesize(
+            text, voice=voice, speed=speed, node_type=node_type, is_preempt=True
+        )
+        engine_used = "kokoro_fp16"
 
     headers = {
         "Content-Type": "audio/wav",
         "X-Audio-Duration": f"{duration:.3f}",
         "X-Sample-Rate": str(sample_rate),
         "X-Word-Timings": json.dumps(word_timings, separators=(",", ":")),
+        "X-Engine-Used": engine_used,
         "Cache-Control": "no-store",
     }
     if sentence_id:
         headers["X-Sentence-ID"] = sentence_id
 
+    return Response(content=wav_bytes, media_type="audio/wav", headers=headers)
+
+
+@app.get("/api/tts/apple-sentence")
+def synthesize_apple_sentence_direct(
+    text: str,
+    voice: str = "apple:Samantha",
+    speed: float = DEFAULT_SPEED,
+    node_type: str = "p",
+):
+    """Dedicated endpoint for Apple Neural sentence synthesis & Phonetic Lens A/B auditioning."""
+    apple_eng = get_apple_engine()
+    wav_bytes, duration, sample_rate, word_timings = apple_eng.synthesize(
+        text, voice=voice, speed=speed, node_type=node_type
+    )
+    headers = {
+        "Content-Type": "audio/wav",
+        "X-Audio-Duration": f"{duration:.3f}",
+        "X-Sample-Rate": str(sample_rate),
+        "X-Word-Timings": json.dumps(word_timings, separators=(",", ":")),
+        "X-Engine-Used": "apple_mac_neural",
+        "Cache-Control": "no-store",
+    }
     return Response(content=wav_bytes, media_type="audio/wav", headers=headers)
 
 
@@ -540,10 +876,14 @@ class LookaheadRequest(BaseModel):
 
 @app.post("/api/tts/lookahead")
 def queue_lookahead(req: LookaheadRequest):
-    engine = get_engine()
-    tuples = [(it.text, it.voice, float(it.speed), it.node_type) for it in req.items]
-    engine.queue_lookahead(tuples)
-    return {"queued": len(tuples)}
+    kokoro_tuples = [
+        (it.text, it.voice, float(it.speed), it.node_type)
+        for it in req.items
+        if not it.voice.startswith("apple:")
+    ]
+    if kokoro_tuples:
+        get_engine().queue_lookahead(kokoro_tuples)
+    return {"queued": len(kokoro_tuples)}
 
 
 # ----------------- WebSocket Live Synchronization ----------------- #

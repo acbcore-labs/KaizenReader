@@ -2323,26 +2323,23 @@ function setupEventListeners() {
 }
 
 function adjustSpeed(delta) {
-  const speeds = [0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.5];
+  const speeds = [0.75, 0.9, 1.0, 1.15, 1.25, 1.5, 1.75, 2.0, 2.5];
   let curIdx = speeds.indexOf(state.speed);
-  if (curIdx === -1) curIdx = 1;
+  if (curIdx === -1) curIdx = 2;
   const nextIdx = Math.max(0, Math.min(speeds.length - 1, curIdx + (delta > 0 ? 1 : -1)));
-  state.speed = speeds[nextIdx];
-  state.prefetchCache.clear();
-  elements.speedSelect.value = state.speed.toString();
-  localStorage.setItem("kaizen_speed", state.speed);
-  updateProgressIndicator();
-  if (state.isPlaying) playSentenceAt(state.currentSentenceIndex);
+  setPlaybackSpeed(speeds[nextIdx]);
 }
 
 function cycleTheme() {
-  const themes = ["sepia", "light", "dark", "eink"];
+  const themes = ["sepia", "light", "dark", "oled", "eink"];
   const curIdx = themes.indexOf(state.theme);
   applyTheme(themes[(curIdx + 1) % themes.length]);
+  syncAtelierUIState();
 }
 
 function openDrawer() {
   elements.drawerOverlay.classList.add("open");
+  refreshVaultTelemetryUI();
 }
 
 function closeDrawer() {
@@ -2358,25 +2355,1155 @@ async function uploadFile(file) {
   const formData = new FormData();
   formData.append("file", file);
 
-  elements.dropzone.innerHTML = `<p>Uploading and analyzing <strong>${escapeHtml(file.name)}</strong>...</p>`;
+  elements.dropzone.innerHTML = `<p>Analyzing &amp; ingesting <strong>${escapeHtml(file.name)}</strong>...</p>`;
   try {
     const res = await fetch("/api/upload", { method: "POST", body: formData });
     const data = await res.json();
     if (data.success) {
+      if (file.name.toLowerCase().endsWith(".kzn") && window.KaizenOfflineParser && window.KaizenVault) {
+        const unpacked = await window.KaizenOfflineParser.unpackKznCartridgeClient(file);
+        await window.KaizenVault.importUnpackedCartridgeToVault(unpacked);
+      }
       await loadLibrary();
       await openBook(data.document.id);
       closeDrawer();
-    } else {
-      alert("Failed to parse file: " + (data.detail || "Unknown error"));
+      return;
     }
+    throw new Error(data.detail || "Server upload rejected");
   } catch (err) {
-    alert("Error uploading file: " + err.message);
+    if (window.KaizenOfflineParser && window.KaizenVault) {
+      try {
+        const parsed = await window.KaizenOfflineParser.parseLocalFile(file);
+        let docAst = null;
+        if (parsed.type === "cartridge") {
+          docAst = await window.KaizenVault.importUnpackedCartridgeToVault(parsed.data);
+        } else {
+          docAst = parsed.data;
+          await window.KaizenVault.saveBookAstToVault(docAst);
+        }
+        await loadLibrary();
+        await openBook(docAst.id);
+        closeDrawer();
+        return;
+      } catch (offlineErr) {
+        alert("Offline parser error: " + offlineErr.message);
+      }
+    } else {
+      alert("Error uploading file: " + err.message);
+    }
   } finally {
     elements.dropzone.innerHTML = `
-      <p><strong>Drop any file here</strong></p>
-      <p style="font-size:0.75rem; margin-top:0.3rem;">.epub, .pdf, .md, .docx, .txt</p>
+      <p><strong>Drop Book or .kzn Cartridge</strong></p>
+      <p style="font-size:0.75rem; margin-top:0.3rem;">.kzn, .epub, .pdf, .md, .docx, .txt (Works Offline)</p>
     `;
   }
 }
 
-window.addEventListener("DOMContentLoaded", init);
+// ==========================================================================
+// Atelier & Acoustic Chronograph Quad-Engine Extensions
+// ==========================================================================
+
+state.engineMode = localStorage.getItem("kaizen_engine_mode") || "kokoro_auto";
+state.smartCadence = localStorage.getItem("kaizen_smart_cadence") !== "false";
+state.smartResume = localStorage.getItem("kaizen_smart_resume") !== "false";
+state.lastPauseTimestamp = 0;
+state.lexiconMap = {};
+state.activeSprite = null;
+state.pocketCurtainOpen = false;
+
+const _origLoadLexicon = loadLexicon;
+loadLexicon = async function () {
+  try {
+    const res = await fetch("/api/lexicon");
+    const data = await res.json();
+    state.lexiconMap = data || {};
+    if (window.KaizenVault) {
+      window.KaizenVault.putSyncItem("lexicon", state.lexiconMap).catch(() => {});
+    }
+    renderLexicon(state.lexiconMap);
+  } catch (err) {
+    if (window.KaizenVault) {
+      const cachedLex = await window.KaizenVault.getSyncItem("lexicon");
+      if (cachedLex) {
+        state.lexiconMap = cachedLex;
+        renderLexicon(cachedLex);
+      }
+    }
+  }
+};
+
+const _origLoadLibrary = loadLibrary;
+loadLibrary = async function () {
+  try {
+    const res = await fetch(`/api/library?voice=${encodeURIComponent(state.voice)}&speed=${encodeURIComponent(state.speed)}`);
+    if (!res.ok) throw new Error("Server unreachable");
+    const books = await res.json();
+    state.libraryBooks = books;
+    renderLibraryList(books);
+    const target = books.find((b) => b.id === (state.serverLastBookId || localStorage.getItem("kaizen_book_id"))) || books[0];
+    if (target) await openBook(target.id);
+  } catch (err) {
+    if (window.KaizenVault) {
+      const vaultBooks = await window.KaizenVault.listVaultBooks();
+      state.libraryBooks = vaultBooks;
+      renderLibraryList(vaultBooks);
+      const localId = localStorage.getItem("kaizen_book_id");
+      const target = vaultBooks.find((b) => b.id === localId) || vaultBooks[0];
+      if (target) await openBook(target.id);
+    }
+  }
+  refreshVaultTelemetryUI();
+};
+
+const _origOpenBook = openBook;
+openBook = async function (bookId) {
+  try {
+    const res = await fetch(`/api/book/${bookId}`);
+    if (!res.ok) throw new Error("Offline");
+    const book = await res.json();
+    if (window.KaizenVault) {
+      window.KaizenVault.saveBookAstToVault(book).catch(() => {});
+    }
+    await applyOpenedBook(book);
+  } catch (err) {
+    if (window.KaizenVault) {
+      const cachedBook = await window.KaizenVault.getBookAstFromVault(bookId);
+      if (cachedBook) {
+        await applyOpenedBook(cachedBook);
+        return;
+      }
+    }
+    console.error("Could not open book:", err);
+  }
+};
+
+async function applyOpenedBook(book) {
+  state.currentBook = book;
+  localStorage.setItem("kaizen_book_id", book.id);
+  if (elements.bookTitle) elements.bookTitle.textContent = book.title;
+  document.title = `${book.title} — KaizenReader Atelier`;
+  if (elements.spineBookTitle) elements.spineBookTitle.textContent = book.title;
+
+  computeAllChaptersMetadata(book);
+  renderTOC(book.chapters);
+  renderQuickNavHUD();
+  renderZenRail();
+  if (state.libraryBooks) renderLibraryList(state.libraryBooks);
+
+  const serverPos = state.serverPositions ? state.serverPositions[book.id] : null;
+  let savedChapter = 0;
+  let savedSentence = 0;
+  if (serverPos && typeof serverPos.chapter_index === "number") {
+    savedChapter = serverPos.chapter_index;
+    savedSentence = serverPos.sentence_index || 0;
+  } else {
+    savedChapter = parseInt(localStorage.getItem(`kaizen_chap_${book.id}`) || "0", 10) || 0;
+    savedSentence = parseInt(localStorage.getItem(`kaizen_sent_${book.id}`) || "0", 10) || 0;
+  }
+
+  state.currentChapterIndex = Math.max(0, Math.min(savedChapter, book.chapters.length - 1));
+  renderCurrentChapter();
+  state.currentSentenceIndex = Math.max(0, Math.min(savedSentence, Math.max(0, state.sentencesInChapter.length - 1)));
+  if (state.sentencesInChapter[state.currentSentenceIndex]) {
+    highlightSentence(state.sentencesInChapter[state.currentSentenceIndex].id);
+    updateProgressIndicator();
+  }
+  updateHeaderTOC();
+  await refreshVaultTelemetryUI();
+  drawAcousticRibbon();
+}
+
+const _origStopCurrentSource = stopCurrentSource;
+stopCurrentSource = function () {
+  _origStopCurrentSource();
+  const hwDeck = document.getElementById("kaizen-hardware-deck");
+  if (hwDeck && !hwDeck.paused) {
+    hwDeck.pause();
+  }
+  if ("speechSynthesis" in window) {
+    try {
+      window.speechSynthesis.cancel();
+    } catch (e) {}
+  }
+};
+
+const _origPauseAudio = pauseAudio;
+pauseAudio = function () {
+  state.lastPauseTimestamp = Date.now();
+  _origPauseAudio();
+  drawAcousticRibbon();
+};
+
+function getEffectiveSentenceSpeed(sentence) {
+  let spd = state.speed || 1.0;
+  if (state.smartCadence && sentence) {
+    const nt = sentence.nodeType || "p";
+    if (nt === "blockquote" || ["h1", "h2", "h3", "h4"].includes(nt)) {
+      spd = Math.max(0.65, +(spd * 0.88).toFixed(2));
+    }
+  }
+  return spd;
+}
+
+playSentenceAt = async function (index) {
+  if (!state.sentencesInChapter || state.sentencesInChapter.length === 0) return;
+
+  if (
+    !state.isPlaying &&
+    state.smartResume &&
+    state.lastPauseTimestamp > 0 &&
+    Date.now() - state.lastPauseTimestamp > 180000 &&
+    index === state.currentSentenceIndex &&
+    index > 0
+  ) {
+    index = Math.max(0, index - 1);
+  }
+  state.lastPauseTimestamp = 0;
+
+  if (index >= state.sentencesInChapter.length) {
+    if (state.currentChapterIndex < state.currentBook.chapters.length - 1) {
+      goToChapter(state.currentChapterIndex + 1, 0);
+      playSentenceAt(0);
+    } else {
+      pauseAudio();
+    }
+    return;
+  }
+  if (index < 0) index = 0;
+
+  const myToken = ++state.playToken;
+  stopCurrentSource();
+
+  state.currentSentenceIndex = index;
+  state.isPlaying = true;
+  elements.playIcon.style.display = "none";
+  elements.pauseIcon.style.display = "block";
+  if ("mediaSession" in navigator) {
+    navigator.mediaSession.playbackState = "playing";
+    updateMediaSessionMetadata();
+  }
+
+  const currentSentence = state.sentencesInChapter[index];
+  highlightSentence(currentSentence.id);
+  updateProgressIndicator();
+  persistReadingState();
+  updateChronographReadout();
+  drawAcousticRibbon();
+
+  if (currentSentence.skip_tts || !currentSentence.text.trim()) {
+    setTimeout(() => {
+      if (state.isPlaying && state.playToken === myToken) playSentenceAt(index + 1);
+    }, 250);
+    return;
+  }
+
+  if (state.engineMode === "apple_ios_neural") {
+    updateEngineTelemetryBadge("apple_ios_neural");
+    playViaAppleWebSpeech(currentSentence, index, myToken);
+    return;
+  }
+
+  if (window.KaizenVault && state.currentBook) {
+    const spriteRecord = await window.KaizenVault.getChapterSpriteFromVault(
+      state.currentBook.id,
+      state.currentChapterIndex,
+      state.voice,
+      state.speed
+    );
+    if (spriteRecord && spriteRecord.audioBlob && spriteRecord.timings) {
+      if (!state.isPlaying || state.playToken !== myToken) return;
+      updateEngineTelemetryBadge("kokoro_vault");
+      await playViaHardwareSpriteDeck(spriteRecord, index, myToken);
+      return;
+    }
+  }
+
+  ensureAudioContext();
+  const effectiveVoice =
+    state.engineMode === "apple_mac_neural" && !state.voice.startsWith("apple:")
+      ? "apple:Samantha"
+      : state.voice;
+
+  try {
+    const effSpeed = getEffectiveSentenceSpeed(currentSentence);
+    const modelSpeed = Math.min(2.0, effSpeed);
+    const url = `/api/tts/sentence?text=${encodeURIComponent(currentSentence.text)}&voice=${encodeURIComponent(effectiveVoice)}&speed=${modelSpeed}&sentence_id=${encodeURIComponent(currentSentence.id)}&node_type=${encodeURIComponent(currentSentence.nodeType || "p")}&engine_mode=${encodeURIComponent(state.engineMode)}`;
+
+    if (state.engineMode === "kokoro_auto") {
+      triggerLookahead(index + 1);
+    }
+
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    let timings = [];
+    try {
+      timings = JSON.parse(res.headers.get("X-Word-Timings") || "[]");
+    } catch (e) {}
+    const arr = await res.arrayBuffer();
+    const buffer = await state.audioCtx.decodeAudioData(arr);
+
+    if (!state.isPlaying || state.playToken !== myToken) return;
+    updateEngineTelemetryBadge(state.engineMode === "apple_mac_neural" ? "apple_mac_neural" : "kokoro_live");
+
+    const ctx = state.audioCtx;
+    const src = ctx.createBufferSource();
+    src.buffer = buffer;
+    const rate = effSpeed > 2.0 ? effSpeed / 2.0 : 1.0;
+    src.playbackRate.value = rate;
+    src.connect(ctx.destination);
+
+    state.currentSource = src;
+    state.playbackRate = rate;
+    state.playStartTime = ctx.currentTime;
+    state.activeTimings = timings;
+
+    src.onended = () => {
+      const wordsInSentence = currentSentence.text ? currentSentence.text.split(/\s+/).filter(Boolean).length : 0;
+      recordReadingStats(wordsInSentence, buffer.duration / rate);
+      if (state.isPlaying && state.playToken === myToken) {
+        playSentenceAt(index + 1);
+      }
+    };
+
+    src.start(0);
+    startWordSyncLoop(currentSentence.id, myToken);
+    broadcastPosition(currentSentence.id);
+  } catch (err) {
+    console.info("Mac server offline; engaging On-Device Apple Neural Live fallback.");
+    updateEngineTelemetryBadge("apple_ios_neural");
+    playViaAppleWebSpeech(currentSentence, index, myToken);
+  }
+};
+
+async function playViaHardwareSpriteDeck(spriteRecord, sentenceIndex, myToken) {
+  const hwDeck = document.getElementById("kaizen-hardware-deck");
+  if (!hwDeck) return;
+
+  const spriteKey = spriteRecord.sprite_key;
+  if (!state.activeSprite || state.activeSprite.spriteKey !== spriteKey) {
+    if (state.activeSprite && state.activeSprite.blobUrl) {
+      URL.revokeObjectURL(state.activeSprite.blobUrl);
+    }
+    const blobUrl = URL.createObjectURL(spriteRecord.audioBlob);
+    hwDeck.src = blobUrl;
+    state.activeSprite = {
+      spriteKey,
+      blobUrl,
+      timings: spriteRecord.timings,
+    };
+  }
+
+  const timings = state.activeSprite.timings;
+  const sentEntry = (timings.sentences || [])[sentenceIndex];
+  if (!sentEntry) {
+    playSentenceAt(sentenceIndex + 1);
+    return;
+  }
+
+  const baseSpriteSpeed = Number(timings.speed || 1.0);
+  const currentSentence = state.sentencesInChapter[sentenceIndex];
+  const targetSpeed = getEffectiveSentenceSpeed(currentSentence);
+  hwDeck.playbackRate = Math.max(0.5, Math.min(2.5, targetSpeed / baseSpriteSpeed));
+
+  if (Math.abs(hwDeck.currentTime - sentEntry.start) > 0.28) {
+    hwDeck.currentTime = sentEntry.start;
+  }
+
+  hwDeck.onended = () => {
+    if (state.isPlaying && state.playToken === myToken) {
+      if (state.currentChapterIndex < state.currentBook.chapters.length - 1) {
+        goToChapter(state.currentChapterIndex + 1, 0);
+        playSentenceAt(0);
+      } else {
+        pauseAudio();
+      }
+    }
+  };
+
+  try {
+    await hwDeck.play();
+  } catch (e) {
+    return;
+  }
+
+  function syncSpriteLoop() {
+    if (!state.isPlaying || state.playToken !== myToken || hwDeck.paused) return;
+    const tNow = hwDeck.currentTime;
+    const sents = timings.sentences || [];
+
+    let lo = 0;
+    let hi = sents.length - 1;
+    let foundIdx = state.currentSentenceIndex;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      const s = sents[mid];
+      if (tNow < s.start) hi = mid - 1;
+      else if (tNow > s.end) lo = mid + 1;
+      else {
+        foundIdx = mid;
+        break;
+      }
+    }
+
+    if (foundIdx !== state.currentSentenceIndex && state.sentencesInChapter[foundIdx]) {
+      const prevWords = (state.sentencesInChapter[state.currentSentenceIndex]?.text || "").split(/\s+/).filter(Boolean).length;
+      recordReadingStats(prevWords, 2.5);
+      state.currentSentenceIndex = foundIdx;
+      const newSent = state.sentencesInChapter[foundIdx];
+      highlightSentence(newSent.id);
+      updateProgressIndicator();
+      persistReadingState();
+      updateChronographReadout();
+      drawAcousticRibbon();
+    }
+
+    if (document.visibilityState !== "hidden") {
+      const activeSentMeta = sents[state.currentSentenceIndex];
+      const activeDomSent = state.sentencesInChapter[state.currentSentenceIndex];
+      if (activeSentMeta && activeDomSent) {
+        const span = document.getElementById(`span-${activeDomSent.id}`);
+        if (span) {
+          const wordEls = span.querySelectorAll(".word-token");
+          let activeWordIdx = -1;
+          for (const tuple of activeSentMeta.words || []) {
+            if (tNow >= tuple[1] && tNow <= tuple[2] + 0.06) {
+              activeWordIdx = tuple[0];
+              break;
+            }
+          }
+          wordEls.forEach((el, idx) => {
+            if (idx === activeWordIdx) el.classList.add("active-word");
+            else el.classList.remove("active-word");
+          });
+        }
+      }
+    }
+
+    state.rafId = requestAnimationFrame(syncSpriteLoop);
+  }
+
+  state.rafId = requestAnimationFrame(syncSpriteLoop);
+}
+
+function playViaAppleWebSpeech(sentence, index, myToken) {
+  if (!("speechSynthesis" in window)) {
+    setTimeout(() => {
+      if (state.isPlaying && state.playToken === myToken) playSentenceAt(index + 1);
+    }, 500);
+    return;
+  }
+
+  window.speechSynthesis.cancel();
+  const normalized = window.KaizenPhonetics
+    ? window.KaizenPhonetics.normalizeTextForTts(sentence.text, state.lexiconMap)
+    : sentence.text;
+
+  const utt = new SpeechSynthesisUtterance(normalized);
+  utt.rate = Math.max(0.5, Math.min(2.2, getEffectiveSentenceSpeed(sentence)));
+
+  const voices = window.speechSynthesis.getVoices() || [];
+  const enVoices = voices.filter((v) => v.lang && v.lang.toLowerCase().startsWith("en"));
+  const preferred =
+    enVoices.find((v) => /premium|enhanced|natural|siri|ava|allison|evan|samantha/i.test(v.name)) ||
+    enVoices[0];
+  if (preferred) utt.voice = preferred;
+
+  const span = document.getElementById(`span-${sentence.id}`);
+  const wordEls = span ? Array.from(span.querySelectorAll(".word-token")) : [];
+  const rawWords = sentence.text.split(/\s+/).filter(Boolean);
+
+  utt.onboundary = (e) => {
+    if (!state.isPlaying || state.playToken !== myToken) return;
+    if (e.name === "word" && wordEls.length > 0) {
+      const ratio = Math.max(0, Math.min(0.99, (e.charIndex || 0) / Math.max(1, normalized.length)));
+      const wIdx = Math.min(wordEls.length - 1, Math.floor(ratio * rawWords.length));
+      wordEls.forEach((el, i) => {
+        if (i === wIdx) el.classList.add("active-word");
+        else el.classList.remove("active-word");
+      });
+    }
+  };
+
+  utt.onend = () => {
+    wordEls.forEach((el) => el.classList.remove("active-word"));
+    recordReadingStats(rawWords.length, Math.max(1, rawWords.length / 2.8));
+    if (state.isPlaying && state.playToken === myToken) {
+      playSentenceAt(index + 1);
+    }
+  };
+
+  utt.onerror = () => {
+    if (state.isPlaying && state.playToken === myToken) {
+      playSentenceAt(index + 1);
+    }
+  };
+
+  window.speechSynthesis.speak(utt);
+}
+
+function drawAcousticRibbon() {
+  const canvas = document.getElementById("acoustic-ribbon");
+  if (!canvas) return;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return;
+
+  const dpr = window.devicePixelRatio || 1;
+  const rect = canvas.getBoundingClientRect();
+  const w = Math.max(160, rect.width || 320);
+  const h = 28;
+  if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) {
+    canvas.width = Math.round(w * dpr);
+    canvas.height = Math.round(h * dpr);
+  }
+  ctx.save();
+  ctx.scale(dpr, dpr);
+  ctx.clearRect(0, 0, w, h);
+
+  const total = Math.max(1, state.sentencesInChapter.length);
+  const progressRatio = (state.currentSentenceIndex + 1) / total;
+  const styles = getComputedStyle(document.documentElement);
+  const accent = styles.getPropertyValue("--accent-color").trim() || "#a85d26";
+  const muted = styles.getPropertyValue("--text-muted").trim() || "#736b60";
+
+  const numBars = 72;
+  const barGap = w / numBars;
+  const envelope = state.activeSprite?.timings?.rms_envelope || null;
+
+  for (let i = 0; i < numBars; i++) {
+    const ratio = i / numBars;
+    const sIdx = Math.min(total - 1, Math.floor(ratio * total));
+    const sent = state.sentencesInChapter[sIdx];
+    let amp = 0.28;
+    if (envelope && envelope.length > 0) {
+      const eIdx = Math.min(envelope.length - 1, Math.floor(ratio * envelope.length));
+      amp = envelope[eIdx];
+    } else if (sent && sent.text) {
+      const lenFactor = Math.min(1.0, sent.text.length / 140);
+      amp = 0.22 + 0.65 * Math.abs(Math.sin(i * 0.63 + lenFactor * 3.1));
+    }
+
+    const isHeading = sent && ["h1", "h2", "h3"].includes(sent.nodeType);
+    const barH = isHeading ? h - 4 : Math.max(4, Math.round(amp * (h - 6)));
+    const x = i * barGap + 1;
+    const y = (h - barH) / 2;
+
+    if (ratio <= progressRatio) {
+      ctx.fillStyle = accent;
+      ctx.globalAlpha = isHeading ? 1.0 : 0.88;
+    } else {
+      ctx.fillStyle = isHeading ? accent : muted;
+      ctx.globalAlpha = isHeading ? 0.55 : 0.3;
+    }
+    ctx.fillRect(x, y, Math.max(1.5, barGap - 1.6), barH);
+  }
+
+  ctx.restore();
+  updateEditorialFolioBar();
+}
+
+function updateEditorialFolioBar() {
+  const leftEl = document.getElementById("folio-left-label");
+  const rightEl = document.getElementById("folio-right-telemetry");
+  if (!state.currentBook) return;
+  const chMeta = state.chapterMetadata[state.currentChapterIndex];
+  if (leftEl) {
+    leftEl.textContent = `${state.currentBook.title.slice(0, 34)} · ${chMeta ? chMeta.badgeLabel : `CH ${state.currentChapterIndex + 1}`}`;
+  }
+  if (rightEl) {
+    const wpm = Math.round(165 * (state.speed || 1.0));
+    const modeTag =
+      state.engineMode === "apple_ios_neural"
+        ? " ANE NEURAL"
+        : state.engineMode === "apple_mac_neural"
+        ? " MAC STUDIO"
+        : "KOKORO STUDIO";
+    rightEl.textContent = `${wpm} WPM · ${modeTag}${state.smartCadence ? " · SMART CADENCE" : ""}`;
+  }
+}
+
+function updateEngineTelemetryBadge(activeMode) {
+  const dot = document.getElementById("engine-status-dot");
+  const label = document.getElementById("engine-mode-label");
+  const sheetBadge = document.getElementById("atelier-active-engine-badge");
+  if (!label) return;
+
+  if (activeMode === "kokoro_vault") {
+    label.textContent = "KOKORO · VAULT";
+    dot?.classList.remove("apple-mode");
+    dot?.classList.add("vault-mode");
+    if (sheetBadge) sheetBadge.textContent = "Playing .m4a Hardware Sprite";
+  } else if (activeMode === "apple_ios_neural") {
+    label.textContent = " APPLE · ANE";
+    dot?.classList.remove("vault-mode");
+    dot?.classList.add("apple-mode");
+    if (sheetBadge) sheetBadge.textContent = "On-Device Apple Neural Active";
+  } else if (activeMode === "apple_mac_neural") {
+    label.textContent = " APPLE · M1";
+    dot?.classList.remove("vault-mode");
+    dot?.classList.add("apple-mode");
+    if (sheetBadge) sheetBadge.textContent = "macOS Apple Neural Stream";
+  } else {
+    label.textContent = "KOKORO · M1";
+    dot?.classList.remove("apple-mode", "vault-mode");
+    if (sheetBadge) sheetBadge.textContent = "Kokoro-82M FP16 Stream";
+  }
+}
+
+async function openPhoneticLens(rawWord, contextText, anchorRect) {
+  const popover = document.getElementById("phonetic-lens-popover");
+  if (!popover) return;
+  const cleanWord = rawWord.replace(/^[.,!?;:"'()[\]]+|[.,!?;:"'()[\]]+$/g, "").trim();
+  if (!cleanWord) return;
+
+  const wordEl = document.getElementById("lens-target-word");
+  const ipaEl = document.getElementById("lens-compiled-ipa");
+  const inputEl = document.getElementById("lens-phonetic-input");
+  const badgeEl = document.getElementById("lens-override-badge");
+  const pillsRow = document.getElementById("lens-stress-pills");
+
+  wordEl.textContent = cleanWord;
+  const existingOverride = state.lexiconMap[cleanWord] || state.lexiconMap[cleanWord.toLowerCase()] || "";
+  inputEl.value = existingOverride;
+  badgeEl.textContent = existingOverride ? "Custom Override" : "Auto G2P";
+
+  const topY = Math.max(66, Math.min(window.innerHeight - 280, (anchorRect?.bottom || 160) + 8));
+  const leftX = Math.max(12, Math.min(window.innerWidth - 352, anchorRect?.left || 24));
+  popover.style.top = `${topY}px`;
+  popover.style.left = `${leftX}px`;
+  popover.style.display = "block";
+
+  let inspectData = null;
+  try {
+    const res = await fetch(`/api/phonetics/inspect?word=${encodeURIComponent(cleanWord)}&context=${encodeURIComponent(contextText || cleanWord)}`);
+    if (res.ok) inspectData = await res.json();
+  } catch (e) {}
+
+  if (!inspectData && window.KaizenPhonetics) {
+    const compiled = window.KaizenPhonetics.respellingToIpa(existingOverride || cleanWord);
+    inspectData = {
+      word: cleanWord,
+      kokoro_ipa: `/${compiled}/`,
+      stress_variants: window.KaizenPhonetics.buildStressVariants(cleanWord),
+    };
+  }
+
+  if (inspectData) {
+    ipaEl.textContent = inspectData.kokoro_ipa || "/—/";
+    pillsRow.innerHTML = "";
+    (inspectData.stress_variants || []).forEach((v) => {
+      const btn = document.createElement("button");
+      btn.className = "stress-syl-pill";
+      btn.textContent = v.respelling;
+      btn.onclick = () => {
+        pillsRow.querySelectorAll(".stress-syl-pill").forEach((b) => b.classList.remove("active"));
+        btn.classList.add("active");
+        inputEl.value = v.respelling;
+        ipaEl.textContent = v.ipa;
+      };
+      pillsRow.appendChild(btn);
+    });
+  }
+
+  inputEl.oninput = () => {
+    if (window.KaizenPhonetics) {
+      const c = window.KaizenPhonetics.respellingToIpa(inputEl.value.trim() || cleanWord);
+      ipaEl.textContent = c ? `/${c}/` : "/—/";
+    }
+  };
+
+  document.getElementById("lens-hear-kokoro-btn").onclick = async () => {
+    const ph = inputEl.value.trim();
+    const previewText = ph
+      ? window.KaizenPhonetics
+        ? `/${window.KaizenPhonetics.respellingToIpa(ph)}/`
+        : ph
+      : cleanWord;
+    try {
+      const ctx = ensureAudioContext();
+      const res = await fetch(`/api/tts/sentence?text=${encodeURIComponent(previewText)}&voice=${encodeURIComponent(state.voice.startsWith("apple:") ? "af_bella" : state.voice)}&speed=1.0`);
+      const buf = await ctx.decodeAudioData(await res.arrayBuffer());
+      const src = ctx.createBufferSource();
+      src.buffer = buf;
+      src.connect(ctx.destination);
+      src.start(0);
+    } catch (e) {
+      alert("Kokoro live audition requires Mac connection or cached sprite.");
+    }
+  };
+
+  document.getElementById("lens-hear-apple-btn").onclick = async () => {
+    const ph = inputEl.value.trim();
+    try {
+      const ctx = ensureAudioContext();
+      const res = await fetch(`/api/tts/apple-sentence?text=${encodeURIComponent(ph || cleanWord)}&speed=1.0`);
+      if (res.ok) {
+        const buf = await ctx.decodeAudioData(await res.arrayBuffer());
+        const src = ctx.createBufferSource();
+        src.buffer = buf;
+        src.connect(ctx.destination);
+        src.start(0);
+        return;
+      }
+    } catch (e) {}
+    if ("speechSynthesis" in window) {
+      window.speechSynthesis.cancel();
+      const utt = new SpeechSynthesisUtterance(ph || cleanWord);
+      window.speechSynthesis.speak(utt);
+    }
+  };
+
+  document.getElementById("lens-save-btn").onclick = async () => {
+    const phoneticVal = inputEl.value.trim();
+    if (!phoneticVal) return;
+    state.lexiconMap[cleanWord] = phoneticVal;
+    if (window.KaizenVault) {
+      await window.KaizenVault.putSyncItem("lexicon", state.lexiconMap);
+    }
+    try {
+      await fetch("/api/lexicon", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ word: cleanWord, phonetic: phoneticVal }),
+      });
+    } catch (e) {}
+    state.prefetchCache.clear();
+    await loadLexicon();
+    badgeEl.textContent = "Saved!";
+    setTimeout(() => {
+      popover.style.display = "none";
+    }, 500);
+  };
+}
+
+function setPlaybackSpeed(newSpeed) {
+  state.speed = parseFloat(newSpeed);
+  state.prefetchCache.clear();
+  if (elements.speedSelect) elements.speedSelect.value = String(state.speed);
+  localStorage.setItem("kaizen_speed", String(state.speed));
+  syncAtelierUIState();
+  updateProgressIndicator();
+  updateChronographReadout();
+  if (state.isPlaying) playSentenceAt(state.currentSentenceIndex);
+}
+
+function setEngineMode(mode) {
+  state.engineMode = mode;
+  localStorage.setItem("kaizen_engine_mode", mode);
+  updateEngineTelemetryBadge(mode);
+  syncAtelierUIState();
+  updateEditorialFolioBar();
+  if (state.isPlaying) playSentenceAt(state.currentSentenceIndex);
+}
+
+function syncAtelierUIState() {
+  const wpm = Math.round(165 * (state.speed || 1.0));
+  const speedReadout = document.getElementById("vernier-speed-readout");
+  if (speedReadout) speedReadout.textContent = `${state.speed.toFixed(2)}× · ~${wpm} WPM`;
+
+  document.querySelectorAll("#vernier-speed-strip .vernier-tick-btn").forEach((btn) => {
+    const s = parseFloat(btn.dataset.speed);
+    if (Math.abs(s - state.speed) < 0.02) btn.classList.add("active");
+    else btn.classList.remove("active");
+  });
+
+  document.querySelectorAll(".engine-option-card").forEach((card) => {
+    if (card.dataset.engine === state.engineMode) card.classList.add("active");
+    else card.classList.remove("active");
+  });
+
+  document.querySelectorAll("#atelier-theme-swatches .theme-swatch-card").forEach((sw) => {
+    if (sw.dataset.themeVal === state.theme) sw.classList.add("active");
+    else sw.classList.remove("active");
+  });
+
+  const fontReadout = document.getElementById("sheet-font-readout");
+  if (fontReadout) fontReadout.textContent = `${state.fontSize}px`;
+}
+
+async function refreshVaultTelemetryUI() {
+  if (!window.KaizenVault) return;
+  const stats = await window.KaizenVault.getVaultStats();
+  const mb = (stats.spritesTotalBytes / (1024 * 1024)).toFixed(1);
+  const badge = document.getElementById("vault-storage-badge");
+  if (badge) {
+    badge.textContent = `${stats.spritesCachedCount} Sprites · ${mb} MB in Vault`;
+  }
+  const drawerStat = document.getElementById("drawer-vault-stat");
+  if (drawerStat) {
+    drawerStat.textContent = `${stats.spritesCachedCount} ch · ${mb} MB`;
+  }
+
+  const matrix = document.getElementById("vault-chapter-matrix");
+  if (matrix && state.currentBook) {
+    const bookSprites = await window.KaizenVault.getBookSpritesMeta(state.currentBook.id);
+    const packedSet = new Set(bookSprites.map((s) => s.chapter_index));
+    matrix.innerHTML = "";
+    state.currentBook.chapters.forEach((ch, idx) => {
+      const cell = document.createElement("div");
+      cell.className = `vault-matrix-cell ${packedSet.has(idx) ? "packed" : ""} ${idx === state.currentChapterIndex ? "current" : ""}`;
+      cell.textContent = String(idx + 1);
+      cell.title = `Ch ${idx + 1}: ${ch.title} (${packedSet.has(idx) ? "Cached in iPhone Vault" : "Not packed yet"})`;
+      cell.onclick = () => goToChapter(idx, 0);
+      matrix.appendChild(cell);
+    });
+  }
+}
+
+async function triggerVaultPack(chapterIndices) {
+  if (!state.currentBook || !window.KaizenVault) return;
+  const wrap = document.getElementById("vault-pack-progress-wrap");
+  const statusText = document.getElementById("vault-pack-status-text");
+  const pctText = document.getElementById("vault-pack-pct-text");
+  const fill = document.getElementById("vault-pack-progress-fill");
+
+  if (wrap) wrap.style.display = "flex";
+  let wakeLock = null;
+  try {
+    if (navigator.wakeLock?.request) {
+      wakeLock = await navigator.wakeLock.request("screen").catch(() => null);
+    }
+    await window.KaizenVault.packChaptersFromFoundry(
+      state.currentBook,
+      chapterIndices,
+      state.voice,
+      state.speed,
+      (prog) => {
+        const pct = Math.round((prog.completedChapters / Math.max(1, prog.totalChapters)) * 100);
+        if (statusText) statusText.textContent = prog.message;
+        if (pctText) pctText.textContent = `${pct}%`;
+        if (fill) fill.style.width = `${pct}%`;
+        if (prog.phase === "cached") {
+          refreshVaultTelemetryUI().catch(() => {});
+        }
+      }
+    );
+    await refreshVaultTelemetryUI();
+  } catch (err) {
+    if (statusText) statusText.textContent = `Pack error: ${err.message}`;
+  } finally {
+    if (wakeLock) wakeLock.release().catch(() => {});
+  }
+}
+
+function updateChronographReadout() {
+  if (!state.pocketCurtainOpen) return;
+  const chCode = document.getElementById("chrono-chapter-code");
+  const sentCounter = document.getElementById("chrono-sentence-counter");
+  const speedTag = document.getElementById("chrono-speed-tag");
+  const liveSent = document.getElementById("chrono-live-sentence");
+  const ring = document.getElementById("chrono-progress-ring");
+
+  const total = Math.max(1, state.sentencesInChapter.length);
+  const cur = state.currentSentenceIndex + 1;
+  if (chCode) chCode.textContent = `CH ${String(state.currentChapterIndex + 1).padStart(2, "0")}`;
+  if (sentCounter) sentCounter.textContent = `${String(cur).padStart(3, "0")} / ${String(total).padStart(3, "0")}`;
+  if (speedTag) speedTag.textContent = `${state.speed.toFixed(2)}×`;
+
+  const sObj = state.sentencesInChapter[state.currentSentenceIndex];
+  if (liveSent && sObj) liveSent.textContent = sObj.text;
+
+  if (ring) {
+    const circumference = 527.78;
+    const offset = circumference * (1 - cur / total);
+    ring.style.strokeDashoffset = String(offset.toFixed(2));
+  }
+}
+
+function setupAtelierExtensions() {
+  if ("serviceWorker" in navigator) {
+    navigator.serviceWorker.register("/sw.js").catch(() => {});
+  }
+  if (window.KaizenVault) {
+    window.KaizenVault.requestPersistentStorage().then(() => refreshVaultTelemetryUI());
+  }
+
+  const sheet = document.getElementById("atelier-console-sheet");
+  const backdrop = document.getElementById("atelier-sheet-backdrop");
+  const openSheet = () => {
+    syncAtelierUIState();
+    refreshVaultTelemetryUI();
+    if (backdrop) backdrop.style.display = "block";
+    if (sheet) sheet.style.display = "flex";
+  };
+  const closeSheet = () => {
+    if (backdrop) backdrop.style.display = "none";
+    if (sheet) sheet.style.display = "none";
+  };
+
+  document.getElementById("atelier-sheet-btn")?.addEventListener("click", openSheet);
+  document.getElementById("engine-mode-pill")?.addEventListener("click", openSheet);
+  document.getElementById("drawer-open-atelier-btn")?.addEventListener("click", () => {
+    closeDrawer();
+    openSheet();
+  });
+  document.getElementById("close-atelier-sheet-btn")?.addEventListener("click", closeSheet);
+  backdrop?.addEventListener("click", closeSheet);
+
+  document.querySelectorAll(".engine-option-card").forEach((card) => {
+    card.addEventListener("click", () => setEngineMode(card.dataset.engine));
+  });
+
+  document.querySelectorAll("#vernier-speed-strip .vernier-tick-btn").forEach((btn) => {
+    btn.addEventListener("click", () => setPlaybackSpeed(parseFloat(btn.dataset.speed)));
+  });
+
+  const cadenceBox = document.getElementById("smart-cadence-toggle");
+  if (cadenceBox) {
+    cadenceBox.checked = state.smartCadence;
+    cadenceBox.onchange = () => {
+      state.smartCadence = cadenceBox.checked;
+      localStorage.setItem("kaizen_smart_cadence", String(state.smartCadence));
+      updateEditorialFolioBar();
+    };
+  }
+  const resumeBox = document.getElementById("smart-resume-toggle");
+  if (resumeBox) {
+    resumeBox.checked = state.smartResume;
+    resumeBox.onchange = () => {
+      state.smartResume = resumeBox.checked;
+      localStorage.setItem("kaizen_smart_resume", String(state.smartResume));
+    };
+  }
+
+  document.querySelectorAll("#atelier-theme-swatches .theme-swatch-card").forEach((sw) => {
+    sw.addEventListener("click", () => {
+      applyTheme(sw.dataset.themeVal);
+      syncAtelierUIState();
+      drawAcousticRibbon();
+    });
+  });
+
+  document.getElementById("sheet-font-inc")?.addEventListener("click", () => {
+    elements.fontIncreaseBtn?.click();
+    syncAtelierUIState();
+  });
+  document.getElementById("sheet-font-dec")?.addEventListener("click", () => {
+    elements.fontDecreaseBtn?.click();
+    syncAtelierUIState();
+  });
+
+  document.getElementById("pack-current-ch-btn")?.addEventListener("click", () => {
+    triggerVaultPack([state.currentChapterIndex]);
+  });
+  document.getElementById("drawer-pack-ch-btn")?.addEventListener("click", () => {
+    closeDrawer();
+    openSheet();
+    triggerVaultPack([state.currentChapterIndex]);
+  });
+  document.getElementById("pack-next3-ch-btn")?.addEventListener("click", () => {
+    if (!state.currentBook) return;
+    const indices = [];
+    for (let i = state.currentChapterIndex; i < Math.min(state.currentBook.chapters.length, state.currentChapterIndex + 3); i++) {
+      indices.push(i);
+    }
+    triggerVaultPack(indices);
+  });
+  document.getElementById("pack-all-ch-btn")?.addEventListener("click", () => {
+    if (!state.currentBook) return;
+    triggerVaultPack(state.currentBook.chapters.map((_, idx) => idx));
+  });
+  document.getElementById("export-kzn-btn")?.addEventListener("click", () => {
+    if (!state.currentBook) return;
+    const url = `/api/book/${state.currentBook.id}/cartridge?voice=${encodeURIComponent(state.voice)}&speed=${encodeURIComponent(state.speed)}`;
+    window.open(url, "_blank");
+  });
+  document.getElementById("import-kzn-btn")?.addEventListener("click", () => {
+    closeSheet();
+    elements.fileInput?.click();
+  });
+
+  document.getElementById("lens-close-btn")?.addEventListener("click", () => {
+    const pop = document.getElementById("phonetic-lens-popover");
+    if (pop) pop.style.display = "none";
+  });
+
+  const handleSelectionForLens = () => {
+    const sel = window.getSelection();
+    const text = sel ? sel.toString().trim() : "";
+    if (text && text.length >= 2 && text.length <= 36 && !text.includes("\n") && elements.readerContent.contains(sel.anchorNode)) {
+      const rect = sel.getRangeAt(0).getBoundingClientRect();
+      const contextSent = state.sentencesInChapter[state.currentSentenceIndex]?.text || text;
+      elements.teachSelectionBtn.style.left = `${Math.max(12, Math.min(window.innerWidth - 150, rect.left))}px`;
+      elements.teachSelectionBtn.style.top = `${Math.max(60, rect.top - 36)}px`;
+      elements.teachSelectionBtn.style.display = "block";
+      elements.teachSelectionBtn.onclick = () => {
+        elements.teachSelectionBtn.style.display = "none";
+        openPhoneticLens(text, contextSent, rect);
+      };
+    }
+  };
+  document.addEventListener("mouseup", handleSelectionForLens);
+  document.addEventListener("touchend", () => setTimeout(handleSelectionForLens, 160));
+
+  const curtain = document.getElementById("pocket-curtain-overlay");
+  document.getElementById("pocket-curtain-btn")?.addEventListener("click", () => {
+    state.pocketCurtainOpen = true;
+    if (curtain) curtain.style.display = "flex";
+    updateChronographReadout();
+  });
+  document.getElementById("chrono-unlock-btn")?.addEventListener("click", () => {
+    state.pocketCurtainOpen = false;
+    if (curtain) curtain.style.display = "none";
+  });
+  document.getElementById("chrono-play-btn")?.addEventListener("click", togglePlay);
+  document.getElementById("chrono-prev-btn")?.addEventListener("click", () => playSentenceAt(state.currentSentenceIndex - 1));
+  document.getElementById("chrono-next-btn")?.addEventListener("click", () => playSentenceAt(state.currentSentenceIndex + 1));
+
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible" && state.currentBook) {
+      const s = state.sentencesInChapter[state.currentSentenceIndex];
+      if (s) highlightSentence(s.id);
+      drawAcousticRibbon();
+    }
+  });
+
+  window.addEventListener("resize", drawAcousticRibbon);
+  updateEngineTelemetryBadge(state.engineMode);
+  syncAtelierUIState();
+  setupGoogleDriveLocker();
+  setTimeout(drawAcousticRibbon, 400);
+}
+
+function setupGoogleDriveLocker() {
+  if (!window.KaizenGDrive) return;
+  const clientIdInput = document.getElementById("gdrive-client-id-input");
+  const connectBtn = document.getElementById("gdrive-connect-btn");
+  const statusBadge = document.getElementById("gdrive-status-badge");
+  const actionsRow = document.getElementById("gdrive-actions-row");
+  const refreshBtn = document.getElementById("gdrive-refresh-btn");
+  const pushBtn = document.getElementById("gdrive-push-btn");
+  const atelierPushBtn = document.getElementById("push-gdrive-kzn-btn");
+  const filesList = document.getElementById("gdrive-files-list");
+
+  const updateDriveUIState = () => {
+    const connected = window.KaizenGDrive.isConnected();
+    if (statusBadge) statusBadge.textContent = connected ? "Connected" : "Disconnected";
+    if (connectBtn) connectBtn.textContent = connected ? "Disconnect" : "Connect";
+    if (actionsRow) actionsRow.style.display = connected ? "flex" : "none";
+    if (filesList) filesList.style.display = connected ? "flex" : "none";
+  };
+
+  window.KaizenGDrive.syncConfigFromServer().then((cfg) => {
+    const cid = window.KaizenGDrive.getSavedClientId() || cfg?.client_id || "";
+    if (clientIdInput && cid) {
+      clientIdInput.value = cid;
+      window.KaizenGDrive.loadGisScript?.().catch(() => {});
+    }
+  });
+  clientIdInput?.addEventListener("focus", () => {
+    window.KaizenGDrive.loadGisScript?.().catch(() => {});
+  });
+
+  const renderDriveFiles = async () => {
+    if (!filesList || !window.KaizenGDrive.isConnected()) return;
+    filesList.innerHTML = `<div class="gdrive-file-sub" style="padding:0.4rem;">Scanning Google Drive...</div>`;
+    try {
+      const files = await window.KaizenGDrive.listDriveLibraryFiles(false);
+      filesList.innerHTML = "";
+      if (!files.length) {
+        filesList.innerHTML = `<div class="gdrive-file-sub" style="padding:0.4rem;">No .kzn, .epub, .pdf, .md, or .docx files found in Drive.</div>`;
+        return;
+      }
+      files.forEach((f) => {
+        const row = document.createElement("div");
+        row.className = "gdrive-file-row";
+        const sizeMb = f.size ? `${(Number(f.size) / (1024 * 1024)).toFixed(1)} MB` : "Drive File";
+        const isKzn = (f.name || "").toLowerCase().endsWith(".kzn");
+        row.innerHTML = `
+          <div class="gdrive-file-meta">
+            <span class="gdrive-file-name" title="${escapeHtml(f.name)}">${escapeHtml(f.name)}</span>
+            <span class="gdrive-file-sub">${isKzn ? "Sovereign Cartridge" : "Document"} · ${sizeMb}</span>
+          </div>
+          <button class="icon-btn" style="font-size:0.7rem; white-space:nowrap;">⬇ Pull</button>
+        `;
+        const pullBtn = row.querySelector("button");
+        pullBtn.onclick = async () => {
+          pullBtn.disabled = true;
+          pullBtn.textContent = "Pulling...";
+          try {
+            const blob = await window.KaizenGDrive.downloadFileAsBlob(f.id);
+            const fileObj = new File([blob], f.name, { type: f.mimeType || "application/octet-stream" });
+            await uploadFile(fileObj);
+            pullBtn.textContent = "✓ Loaded";
+          } catch (err) {
+            alert("Drive download error: " + err.message);
+            pullBtn.textContent = "⬇ Pull";
+          } finally {
+            pullBtn.disabled = false;
+          }
+        };
+        filesList.appendChild(row);
+      });
+    } catch (err) {
+      filesList.innerHTML = `<div class="gdrive-file-sub" style="padding:0.4rem; color:#dc2626;">${escapeHtml(err.message)}</div>`;
+    }
+  };
+
+  const pushCurrentCartridgeToDrive = async (triggerBtn) => {
+    if (!state.currentBook) {
+      alert("Open a book first before pushing a .kzn cartridge.");
+      return;
+    }
+    const origText = triggerBtn ? triggerBtn.textContent : "";
+    try {
+      if (!window.KaizenGDrive.isConnected()) {
+        await window.KaizenGDrive.connect(clientIdInput?.value || "");
+        updateDriveUIState();
+      }
+      if (triggerBtn) {
+        triggerBtn.disabled = true;
+        triggerBtn.textContent = "Packing & Pushing...";
+      }
+      const res = await fetch(
+        `/api/book/${state.currentBook.id}/cartridge?voice=${encodeURIComponent(state.voice)}&speed=${encodeURIComponent(state.speed)}`
+      );
+      if (!res.ok) throw new Error(`Cartridge export failed (${res.status})`);
+      const blob = await res.blob();
+      const safeTitle = (state.currentBook.title || "KaizenBook").replace(/[^a-zA-Z0-9_-]+/g, "_").slice(0, 48);
+      const filename = `${safeTitle}_${state.currentBook.id}.kzn`;
+      await window.KaizenGDrive.uploadCartridgeToDrive(filename, blob, "KaizenReader");
+      if (triggerBtn) triggerBtn.textContent = "✓ Pushed to Drive!";
+      await renderDriveFiles();
+      setTimeout(() => {
+        if (triggerBtn) triggerBtn.textContent = origText;
+      }, 2500);
+    } catch (err) {
+      alert("Google Drive push error: " + err.message);
+      if (triggerBtn) triggerBtn.textContent = origText;
+    } finally {
+      if (triggerBtn) triggerBtn.disabled = false;
+    }
+  };
+
+  if (connectBtn) {
+    connectBtn.onclick = async () => {
+      if (window.KaizenGDrive.isConnected()) {
+        window.KaizenGDrive.disconnect();
+        updateDriveUIState();
+        return;
+      }
+      try {
+        connectBtn.disabled = true;
+        connectBtn.textContent = "Connecting...";
+        await window.KaizenGDrive.connect(clientIdInput?.value || "");
+        updateDriveUIState();
+        await renderDriveFiles();
+      } catch (err) {
+        alert(err.message);
+      } finally {
+        connectBtn.disabled = false;
+        updateDriveUIState();
+      }
+    };
+  }
+
+  refreshBtn?.addEventListener("click", renderDriveFiles);
+  pushBtn?.addEventListener("click", () => pushCurrentCartridgeToDrive(pushBtn));
+  atelierPushBtn?.addEventListener("click", () => pushCurrentCartridgeToDrive(atelierPushBtn));
+  updateDriveUIState();
+}
+
+window.addEventListener("DOMContentLoaded", async () => {
+  await init();
+  setupAtelierExtensions();
+});

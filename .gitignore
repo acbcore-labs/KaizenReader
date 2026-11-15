@@ -8,4 +8,6 @@ data/cache/
 data/state.json
 data/users.json
 data/users/
+data/certs/
+*.kzn
 .DS_Store
