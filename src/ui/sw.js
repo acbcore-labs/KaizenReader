@@ -5,7 +5,7 @@
  * with the MacBook Pro M1 powered off, serving all UI shell assets from Cache Storage
  * and seamlessly falling back to the IndexedDB Sovereign Vault when `/api/*` is offline.
  */
-const CACHE_NAME = "kaizen-atelier-shell-v7";
+const CACHE_NAME = "kaizen-atelier-shell-v8";
 const SHELL_ASSETS = [
   "/",
   "/index.html",

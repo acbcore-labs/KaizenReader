@@ -11,7 +11,7 @@
   "use strict";
 
   const DB_NAME = "kaizen_sovereign_vault_v1";
-  const DB_VERSION = 1;
+  const DB_VERSION = 2;
 
   let _dbPromise = null;
 
@@ -31,9 +31,14 @@
         if (!db.objectStoreNames.contains("books_ast")) {
           db.createObjectStore("books_ast", { keyPath: "id" });
         }
+        let spriteStore;
         if (!db.objectStoreNames.contains("chapter_sprites")) {
-          const store = db.createObjectStore("chapter_sprites", { keyPath: "sprite_key" });
-          store.createIndex("by_book", "book_id", { unique: false });
+          spriteStore = db.createObjectStore("chapter_sprites", { keyPath: "sprite_key" });
+        } else {
+          spriteStore = e.target.transaction.objectStore("chapter_sprites");
+        }
+        if (spriteStore && !spriteStore.indexNames.contains("by_book")) {
+          spriteStore.createIndex("by_book", "book_id", { unique: false });
         }
         if (!db.objectStoreNames.contains("user_state_sync")) {
           db.createObjectStore("user_state_sync", { keyPath: "key" });
@@ -64,7 +69,7 @@
 
   function makeSpriteKey(bookId, chapterIndex, voice = "af_bella", speed = 1.0) {
     const normSpeed = Number(speed || 1.0).toFixed(2);
-    return `${bookId}:${chapterIndex}:${voice}:${normSpeed}`;
+    return `${bookId}:${Number(chapterIndex)}:${voice}:${normSpeed}`;
   }
 
   async function putStore(storeName, value) {
@@ -137,11 +142,12 @@
   }
 
   async function saveChapterSpriteToVault(bookId, chapterIndex, voice, speed, audioBlob, timings) {
-    const sprite_key = makeSpriteKey(bookId, chapterIndex, voice, speed);
+    const numIdx = Number(chapterIndex);
+    const sprite_key = makeSpriteKey(bookId, numIdx, voice, speed);
     const record = {
       sprite_key,
       book_id: bookId,
-      chapter_index: chapterIndex,
+      chapter_index: numIdx,
       voice,
       speed: Number(speed || 1.0),
       audioBlob,
@@ -155,52 +161,72 @@
     const meta = await getStore("books_meta", bookId);
     if (meta) {
       const set = new Set(meta.packed_chapters || []);
-      set.add(chapterIndex);
+      set.add(numIdx);
       meta.packed_chapters = Array.from(set).sort((a, b) => a - b);
-      const allSprites = await getBookSpritesMeta(bookId);
-      meta.vault_bytes = allSprites.reduce((acc, s) => acc + (s.byteSize || 0), 0);
+      meta.vault_bytes = (meta.vault_bytes || 0) + (record.byteSize || 0);
       await putStore("books_meta", meta);
     }
     return record;
   }
 
   async function getChapterSpriteFromVault(bookId, chapterIndex, voice, speed) {
-    const exactKey = makeSpriteKey(bookId, chapterIndex, voice, speed);
+    const numIdx = Number(chapterIndex);
+    const exactKey = makeSpriteKey(bookId, numIdx, voice, speed);
     const exact = await getStore("chapter_sprites", exactKey);
-    if (exact) return exact;
+    if (exact && exact.audioBlob && exact.timings) return exact;
 
     // Fallback: if offline and user changed speed or voice, find any packed sprite for this book + chapter
     const db = await openVaultDB();
     return new Promise((resolve) => {
-      const tx = db.transaction("chapter_sprites", "readonly");
-      const idx = tx.objectStore("chapter_sprites").index("by_book");
-      const req = idx.getAll(bookId);
-      req.onsuccess = () => {
-        const matches = (req.result || []).filter((r) => r.chapter_index === chapterIndex);
-        resolve(matches[0] || null);
-      };
-      req.onerror = () => resolve(null);
+      try {
+        const tx = db.transaction("chapter_sprites", "readonly");
+        const store = tx.objectStore("chapter_sprites");
+        const req = store.indexNames && store.indexNames.contains("by_book")
+          ? store.index("by_book").getAll(bookId)
+          : store.getAll();
+        req.onsuccess = () => {
+          const all = req.result || [];
+          const matches = all.filter((r) =>
+            (r.book_id === bookId || !bookId) &&
+            Number(r.chapter_index) === numIdx &&
+            r.audioBlob &&
+            r.timings
+          );
+          resolve(matches[0] || null);
+        };
+        req.onerror = () => resolve(null);
+      } catch (e) {
+        resolve(null);
+      }
     });
   }
 
   async function getBookSpritesMeta(bookId) {
     const db = await openVaultDB();
     return new Promise((resolve) => {
-      const tx = db.transaction("chapter_sprites", "readonly");
-      const idx = tx.objectStore("chapter_sprites").index("by_book");
-      const req = idx.getAll(bookId);
-      req.onsuccess = () => {
-        const list = (req.result || []).map((r) => ({
-          sprite_key: r.sprite_key,
-          chapter_index: r.chapter_index,
-          voice: r.voice,
-          speed: r.speed,
-          byteSize: r.byteSize || 0,
-          createdAt: r.createdAt,
-        }));
-        resolve(list);
-      };
-      req.onerror = () => resolve([]);
+      try {
+        const tx = db.transaction("chapter_sprites", "readonly");
+        const store = tx.objectStore("chapter_sprites");
+        const req = store.indexNames && store.indexNames.contains("by_book")
+          ? store.index("by_book").getAll(bookId)
+          : store.getAll();
+        req.onsuccess = () => {
+          const list = (req.result || [])
+            .filter((r) => r.book_id === bookId || !bookId)
+            .map((r) => ({
+              sprite_key: r.sprite_key,
+              chapter_index: Number(r.chapter_index),
+              voice: r.voice,
+              speed: r.speed,
+              byteSize: r.byteSize || 0,
+              createdAt: r.createdAt,
+            }));
+          resolve(list);
+        };
+        req.onerror = () => resolve([]);
+      } catch (e) {
+        resolve([]);
+      }
     });
   }
 
@@ -319,7 +345,7 @@
     for (const sp of sprites || []) {
       await saveChapterSpriteToVault(
         ast.id,
-        sp.chapter_index,
+        Number(sp.chapter_index),
         voice,
         speed,
         sp.audioBlob,

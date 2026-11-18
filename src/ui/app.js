@@ -140,15 +140,55 @@ const elements = {
   userNotesList: document.getElementById("user-notes-list"),
 };
 
+async function fetchWithTimeout(url, options = {}, timeoutMs = 1200) {
+  if (navigator.onLine === false) {
+    throw new Error("Offline");
+  }
+  const controller = new AbortController();
+  const id = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, { ...options, signal: controller.signal });
+    clearTimeout(id);
+    return res;
+  } catch (e) {
+    clearTimeout(id);
+    throw e;
+  }
+}
+
 function ensureAudioContext() {
   if (!state.audioCtx) {
     const AudioCtx = window.AudioContext || window.webkitAudioContext;
     state.audioCtx = new AudioCtx();
   }
   if (state.audioCtx.state === "suspended") {
-    state.audioCtx.resume();
+    state.audioCtx.resume().catch(() => {});
   }
   return state.audioCtx;
+}
+
+function primeAudioEnginesOnGesture() {
+  try {
+    ensureAudioContext();
+  } catch (e) {}
+
+  try {
+    const hwDeck = document.getElementById("kaizen-hardware-deck");
+    if (hwDeck) {
+      if (!hwDeck.src && !hwDeck.currentSrc) {
+        hwDeck.src = "data:audio/wav;base64,UklGRigAAABXQVZlZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQQAAAAAAA==";
+        hwDeck.load();
+      }
+      const p = hwDeck.play();
+      if (p && typeof p.then === "function") {
+        p.then(() => {
+          if (hwDeck.src && hwDeck.src.startsWith("data:")) {
+            hwDeck.pause();
+          }
+        }).catch(() => {});
+      }
+    }
+  } catch (e) {}
 }
 
 async function init() {
@@ -167,8 +207,10 @@ async function init() {
 }
 
 async function fetchServerState() {
+  if (navigator.onLine === false) return;
   try {
-    const res = await fetch("/api/state");
+    const res = await fetchWithTimeout("/api/state", {}, 1000);
+    if (!res.ok) return;
     const data = await res.json();
     state.serverPositions = data.positions || {};
     state.serverLastBookId = data.last_book_id || null;
@@ -335,11 +377,12 @@ async function flushReadingStats() {
 }
 
 async function fetchUserData() {
+  if (navigator.onLine === false) return;
   try {
     const [userRes, usersRes, memRes] = await Promise.all([
-      fetch("/api/user/current"),
-      fetch("/api/users"),
-      fetch("/api/user/memory"),
+      fetchWithTimeout("/api/user/current", {}, 1000),
+      fetchWithTimeout("/api/users", {}, 1000),
+      fetchWithTimeout("/api/user/memory", {}, 1000),
     ]);
 
     if (userRes.ok) {
@@ -364,7 +407,7 @@ async function fetchUserData() {
 
     await fetchNotes();
   } catch (err) {
-    console.warn("Error fetching user data:", err);
+    console.warn("Offline or unreachable user data:", err);
   }
 }
 
@@ -644,25 +687,30 @@ function applyTheme(theme) {
 }
 
 async function fetchStatusAndVoices() {
+  if (navigator.onLine === false) return;
   try {
-    const res = await fetch("/api/status");
-    const data = await res.json();
-    if (data.companion_url) {
-      elements.mobileUrlText.textContent = data.companion_url.replace("http://", "");
-      elements.mobileBadge.onclick = () => {
-        navigator.clipboard?.writeText(data.companion_url);
-        elements.mobileUrlText.textContent = "Copied!";
-        setTimeout(() => {
-          elements.mobileUrlText.textContent = data.companion_url.replace("http://", "");
-        }, 2000);
-      };
+    const res = await fetchWithTimeout("/api/status", {}, 1000);
+    if (res.ok) {
+      const data = await res.json();
+      if (data.companion_url && elements.mobileUrlText) {
+        elements.mobileUrlText.textContent = data.companion_url.replace("http://", "");
+        elements.mobileBadge.onclick = () => {
+          navigator.clipboard?.writeText(data.companion_url);
+          elements.mobileUrlText.textContent = "Copied!";
+          setTimeout(() => {
+            elements.mobileUrlText.textContent = data.companion_url.replace("http://", "");
+          }, 2000);
+        };
+      }
     }
 
-    const voiceRes = await fetch("/api/voices");
-    const voices = await voiceRes.json();
-    populateVoiceSelect(voices);
+    const voiceRes = await fetchWithTimeout("/api/voices", {}, 1000);
+    if (voiceRes.ok) {
+      const voices = await voiceRes.json();
+      populateVoiceSelect(voices);
+    }
   } catch (err) {
-    console.error("Failed to load status/voices:", err);
+    console.warn("Failed to load status/voices (offline):", err);
   }
 }
 
@@ -1676,6 +1724,7 @@ function stopCurrentSource() {
 }
 
 function togglePlay() {
+  primeAudioEnginesOnGesture();
   if (state.isPlaying) pauseAudio();
   else playSentenceAt(state.currentSentenceIndex);
 }
@@ -1923,6 +1972,7 @@ function updateMediaSessionMetadata() {
 }
 
 function connectWebSocket() {
+  if (navigator.onLine === false) return;
   const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
   const wsUrl = `${proto}//${window.location.host}/ws/sync`;
   try {
@@ -2413,38 +2463,49 @@ state.pocketCurtainOpen = false;
 
 const _origLoadLexicon = loadLexicon;
 loadLexicon = async function () {
-  try {
-    const res = await fetch("/api/lexicon");
-    const data = await res.json();
-    state.lexiconMap = data || {};
-    if (window.KaizenVault) {
-      window.KaizenVault.putSyncItem("lexicon", state.lexiconMap).catch(() => {});
-    }
-    renderLexicon(state.lexiconMap);
-  } catch (err) {
-    if (window.KaizenVault) {
-      const cachedLex = await window.KaizenVault.getSyncItem("lexicon");
-      if (cachedLex) {
-        state.lexiconMap = cachedLex;
-        renderLexicon(cachedLex);
+  if (navigator.onLine !== false) {
+    try {
+      const res = await fetchWithTimeout("/api/lexicon", {}, 1000);
+      if (res.ok) {
+        const data = await res.json();
+        state.lexiconMap = data || {};
+        if (window.KaizenVault) {
+          window.KaizenVault.putSyncItem("lexicon", state.lexiconMap).catch(() => {});
+        }
+        renderLexicon(state.lexiconMap);
+        return;
       }
+    } catch (err) {}
+  }
+  if (window.KaizenVault) {
+    const cachedLex = await window.KaizenVault.getSyncItem("lexicon");
+    if (cachedLex) {
+      state.lexiconMap = cachedLex;
+      renderLexicon(cachedLex);
     }
   }
 };
 
 const _origLoadLibrary = loadLibrary;
 loadLibrary = async function () {
-  try {
-    const res = await fetch(`/api/library?voice=${encodeURIComponent(state.voice)}&speed=${encodeURIComponent(state.speed)}`);
-    if (!res.ok) throw new Error("Server unreachable");
-    const books = await res.json();
-    state.libraryBooks = books;
-    renderLibraryList(books);
-    const target = books.find((b) => b.id === (state.serverLastBookId || localStorage.getItem("kaizen_book_id"))) || books[0];
-    if (target) await openBook(target.id);
-  } catch (err) {
-    if (window.KaizenVault) {
-      const vaultBooks = await window.KaizenVault.listVaultBooks();
+  let loadedOnline = false;
+  if (navigator.onLine !== false) {
+    try {
+      const res = await fetchWithTimeout(`/api/library?voice=${encodeURIComponent(state.voice)}&speed=${encodeURIComponent(state.speed)}`, {}, 1200);
+      if (res.ok) {
+        const books = await res.json();
+        state.libraryBooks = books;
+        renderLibraryList(books);
+        const target = books.find((b) => b.id === (state.serverLastBookId || localStorage.getItem("kaizen_book_id"))) || books[0];
+        if (target) await openBook(target.id);
+        loadedOnline = true;
+      }
+    } catch (err) {}
+  }
+
+  if (!loadedOnline && window.KaizenVault) {
+    const vaultBooks = await window.KaizenVault.listVaultBooks();
+    if (vaultBooks && vaultBooks.length > 0) {
       state.libraryBooks = vaultBooks;
       renderLibraryList(vaultBooks);
       const localId = localStorage.getItem("kaizen_book_id");
@@ -2457,24 +2518,28 @@ loadLibrary = async function () {
 
 const _origOpenBook = openBook;
 openBook = async function (bookId) {
-  try {
-    const res = await fetch(`/api/book/${bookId}`);
-    if (!res.ok) throw new Error("Offline");
-    const book = await res.json();
-    if (window.KaizenVault) {
-      window.KaizenVault.saveBookAstToVault(book).catch(() => {});
-    }
-    await applyOpenedBook(book);
-  } catch (err) {
-    if (window.KaizenVault) {
-      const cachedBook = await window.KaizenVault.getBookAstFromVault(bookId);
-      if (cachedBook) {
-        await applyOpenedBook(cachedBook);
+  if (navigator.onLine !== false) {
+    try {
+      const res = await fetchWithTimeout(`/api/book/${bookId}`, {}, 1200);
+      if (res.ok) {
+        const book = await res.json();
+        if (window.KaizenVault) {
+          window.KaizenVault.saveBookAstToVault(book).catch(() => {});
+        }
+        await applyOpenedBook(book);
         return;
       }
-    }
-    console.error("Could not open book:", err);
+    } catch (err) {}
   }
+
+  if (window.KaizenVault) {
+    const cachedBook = await window.KaizenVault.getBookAstFromVault(bookId);
+    if (cachedBook) {
+      await applyOpenedBook(cachedBook);
+      return;
+    }
+  }
+  console.error("Could not open book (offline and not in Vault):", bookId);
 };
 
 async function applyOpenedBook(book) {
@@ -2548,6 +2613,8 @@ function getEffectiveSentenceSpeed(sentence) {
 playSentenceAt = async function (index) {
   if (!state.sentencesInChapter || state.sentencesInChapter.length === 0) return;
 
+  primeAudioEnginesOnGesture();
+
   if (
     !state.isPlaying &&
     state.smartResume &&
@@ -2604,18 +2671,33 @@ playSentenceAt = async function (index) {
   }
 
   if (window.KaizenVault && state.currentBook) {
-    const spriteRecord = await window.KaizenVault.getChapterSpriteFromVault(
-      state.currentBook.id,
-      state.currentChapterIndex,
-      state.voice,
-      state.speed
-    );
-    if (spriteRecord && spriteRecord.audioBlob && spriteRecord.timings) {
-      if (!state.isPlaying || state.playToken !== myToken) return;
-      updateEngineTelemetryBadge("kokoro_vault");
-      await playViaHardwareSpriteDeck(spriteRecord, index, myToken);
-      return;
+    try {
+      const spriteRecord = await window.KaizenVault.getChapterSpriteFromVault(
+        state.currentBook.id,
+        state.currentChapterIndex,
+        state.voice,
+        state.speed
+      );
+      if (spriteRecord && spriteRecord.audioBlob && spriteRecord.timings) {
+        if (!state.isPlaying || state.playToken !== myToken) return;
+        updateEngineTelemetryBadge("kokoro_vault");
+        const played = await playViaHardwareSpriteDeck(spriteRecord, index, myToken);
+        if (played !== false) {
+          return;
+        }
+        console.warn("Hardware sprite deck could not play; engaging Web Audio / Speech fallback.");
+      }
+    } catch (vaultErr) {
+      console.warn("Vault sprite lookup error:", vaultErr);
     }
+  }
+
+  // If offline and no sprite was playable in Vault, immediately fallback to on-device speech
+  if (navigator.onLine === false) {
+    console.info("Device offline with no sprite available; engaging On-Device Apple Neural Live fallback.");
+    updateEngineTelemetryBadge("apple_ios_neural");
+    playViaAppleWebSpeech(currentSentence, index, myToken);
+    return;
   }
 
   ensureAudioContext();
@@ -2633,7 +2715,7 @@ playSentenceAt = async function (index) {
       triggerLookahead(index + 1);
     }
 
-    const res = await fetch(url);
+    const res = await fetchWithTimeout(url, {}, 1800);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     let timings = [];
     try {
@@ -2669,7 +2751,7 @@ playSentenceAt = async function (index) {
     startWordSyncLoop(currentSentence.id, myToken);
     broadcastPosition(currentSentence.id);
   } catch (err) {
-    console.info("Mac server offline; engaging On-Device Apple Neural Live fallback.");
+    console.info("Mac server offline or unreachable; engaging On-Device Apple Neural Live fallback:", err);
     updateEngineTelemetryBadge("apple_ios_neural");
     playViaAppleWebSpeech(currentSentence, index, myToken);
   }
@@ -2677,15 +2759,33 @@ playSentenceAt = async function (index) {
 
 async function playViaHardwareSpriteDeck(spriteRecord, sentenceIndex, myToken) {
   const hwDeck = document.getElementById("kaizen-hardware-deck");
-  if (!hwDeck) return;
+  if (!hwDeck) {
+    return await playViaWebAudioSprite(spriteRecord, sentenceIndex, myToken);
+  }
 
   const spriteKey = spriteRecord.sprite_key;
   if (!state.activeSprite || state.activeSprite.spriteKey !== spriteKey) {
     if (state.activeSprite && state.activeSprite.blobUrl) {
       URL.revokeObjectURL(state.activeSprite.blobUrl);
     }
-    const blobUrl = URL.createObjectURL(spriteRecord.audioBlob);
+    let blob = spriteRecord.audioBlob;
+    if (blob instanceof Blob) {
+      if (!blob.type || blob.type === "application/octet-stream") {
+        blob = new Blob([blob], { type: "audio/mp4" });
+      }
+    } else if (blob && (blob instanceof ArrayBuffer || blob.buffer)) {
+      blob = new Blob([blob], { type: "audio/mp4" });
+    }
+    const blobUrl = URL.createObjectURL(blob);
+
+    hwDeck.innerHTML = "";
+    const source = document.createElement("source");
+    source.src = blobUrl;
+    source.type = blob.type || "audio/mp4";
+    hwDeck.appendChild(source);
     hwDeck.src = blobUrl;
+    hwDeck.load();
+
     state.activeSprite = {
       spriteKey,
       blobUrl,
@@ -2697,7 +2797,7 @@ async function playViaHardwareSpriteDeck(spriteRecord, sentenceIndex, myToken) {
   const sentEntry = (timings.sentences || [])[sentenceIndex];
   if (!sentEntry) {
     playSentenceAt(sentenceIndex + 1);
-    return;
+    return true;
   }
 
   const baseSpriteSpeed = Number(timings.speed || 1.0);
@@ -2705,8 +2805,22 @@ async function playViaHardwareSpriteDeck(spriteRecord, sentenceIndex, myToken) {
   const targetSpeed = getEffectiveSentenceSpeed(currentSentence);
   hwDeck.playbackRate = Math.max(0.5, Math.min(2.5, targetSpeed / baseSpriteSpeed));
 
-  if (Math.abs(hwDeck.currentTime - sentEntry.start) > 0.28) {
-    hwDeck.currentTime = sentEntry.start;
+  const targetTime = Math.max(0, sentEntry.start || 0);
+  const applySeek = () => {
+    try {
+      if (Math.abs(hwDeck.currentTime - targetTime) > 0.15) {
+        hwDeck.currentTime = targetTime;
+      }
+    } catch (e) {
+      console.warn("Could not seek hwDeck:", e);
+    }
+  };
+
+  if (hwDeck.readyState >= 1) {
+    applySeek();
+  } else {
+    hwDeck.addEventListener("loadedmetadata", applySeek, { once: true });
+    hwDeck.addEventListener("canplay", applySeek, { once: true });
   }
 
   hwDeck.onended = () => {
@@ -2723,11 +2837,16 @@ async function playViaHardwareSpriteDeck(spriteRecord, sentenceIndex, myToken) {
   try {
     await hwDeck.play();
   } catch (e) {
-    return;
+    console.warn("hwDeck.play() prevented or failed, engaging Web Audio sprite fallback:", e);
+    return await playViaWebAudioSprite(spriteRecord, sentenceIndex, myToken);
   }
 
   function syncSpriteLoop() {
-    if (!state.isPlaying || state.playToken !== myToken || hwDeck.paused) return;
+    if (!state.isPlaying || state.playToken !== myToken) return;
+    if (hwDeck.paused) {
+      state.rafId = requestAnimationFrame(syncSpriteLoop);
+      return;
+    }
     const tNow = hwDeck.currentTime;
     const sents = timings.sentences || [];
 
@@ -2783,6 +2902,95 @@ async function playViaHardwareSpriteDeck(spriteRecord, sentenceIndex, myToken) {
   }
 
   state.rafId = requestAnimationFrame(syncSpriteLoop);
+
+  hwDeck.ontimeupdate = () => {
+    if (!state.isPlaying || state.playToken !== myToken) return;
+    const tNow = hwDeck.currentTime;
+    const sents = timings.sentences || [];
+    let lo = 0, hi = sents.length - 1, foundIdx = state.currentSentenceIndex;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      const s = sents[mid];
+      if (tNow < s.start) hi = mid - 1;
+      else if (tNow > s.end) lo = mid + 1;
+      else { foundIdx = mid; break; }
+    }
+    if (foundIdx !== state.currentSentenceIndex && state.sentencesInChapter[foundIdx]) {
+      state.currentSentenceIndex = foundIdx;
+      const newSent = state.sentencesInChapter[foundIdx];
+      highlightSentence(newSent.id);
+      updateProgressIndicator();
+      persistReadingState();
+      updateChronographReadout();
+    }
+  };
+
+  return true;
+}
+
+async function playViaWebAudioSprite(spriteRecord, sentenceIndex, myToken) {
+  try {
+    ensureAudioContext();
+    const ctx = state.audioCtx;
+    if (!ctx) throw new Error("No AudioContext available");
+
+    const timings = spriteRecord.timings;
+    const sentEntry = (timings.sentences || [])[sentenceIndex];
+    if (!sentEntry) {
+      playSentenceAt(sentenceIndex + 1);
+      return true;
+    }
+
+    let buffer = spriteRecord._decodedAudioBuffer;
+    if (!buffer) {
+      let blob = spriteRecord.audioBlob;
+      const arr = blob instanceof ArrayBuffer ? blob : await blob.arrayBuffer();
+      buffer = await ctx.decodeAudioData(arr.slice(0));
+      spriteRecord._decodedAudioBuffer = buffer;
+    }
+
+    if (!state.isPlaying || state.playToken !== myToken) return false;
+
+    const currentSentence = state.sentencesInChapter[sentenceIndex];
+    const baseSpeed = Number(timings.speed || 1.0);
+    const targetSpeed = getEffectiveSentenceSpeed(currentSentence);
+    const rate = Math.max(0.5, Math.min(2.5, targetSpeed / baseSpeed));
+
+    const src = ctx.createBufferSource();
+    src.buffer = buffer;
+    src.playbackRate.value = rate;
+    src.connect(ctx.destination);
+
+    state.currentSource = src;
+    state.playbackRate = rate;
+    state.playStartTime = ctx.currentTime;
+
+    const compactWords = sentEntry.words || [];
+    state.activeTimings = compactWords.map((w) => ({
+      i: w[0],
+      s: Math.max(0, w[1] - sentEntry.start),
+      e: Math.max(0, w[2] - sentEntry.start),
+    }));
+
+    const offset = Math.max(0, sentEntry.start);
+    const duration = Math.max(0.1, (sentEntry.end - sentEntry.start) / rate);
+
+    src.onended = () => {
+      const words = (currentSentence.text || "").split(/\s+/).filter(Boolean).length;
+      recordReadingStats(words, duration);
+      if (state.isPlaying && state.playToken === myToken) {
+        playSentenceAt(sentenceIndex + 1);
+      }
+    };
+
+    src.start(0, offset, duration);
+    startWordSyncLoop(currentSentence.id, myToken);
+    broadcastPosition(currentSentence.id);
+    return true;
+  } catch (err) {
+    console.warn("Web Audio sprite decode/play failed:", err);
+    return false;
+  }
 }
 
 function playViaAppleWebSpeech(sentence, index, myToken) {
@@ -2793,7 +3001,12 @@ function playViaAppleWebSpeech(sentence, index, myToken) {
     return;
   }
 
-  window.speechSynthesis.cancel();
+  try {
+    if (window.speechSynthesis.speaking || window.speechSynthesis.pending) {
+      window.speechSynthesis.cancel();
+    }
+  } catch (e) {}
+
   const normalized = window.KaizenPhonetics
     ? window.KaizenPhonetics.normalizeTextForTts(sentence.text, state.lexiconMap)
     : sentence.text;
@@ -2803,9 +3016,11 @@ function playViaAppleWebSpeech(sentence, index, myToken) {
 
   const voices = window.speechSynthesis.getVoices() || [];
   const enVoices = voices.filter((v) => v.lang && v.lang.toLowerCase().startsWith("en"));
+  const localEnVoices = enVoices.filter((v) => v.localService);
+  const candidateVoices = localEnVoices.length > 0 ? localEnVoices : enVoices;
   const preferred =
-    enVoices.find((v) => /premium|enhanced|natural|siri|ava|allison|evan|samantha/i.test(v.name)) ||
-    enVoices[0];
+    candidateVoices.find((v) => /premium|enhanced|natural|siri|ava|allison|evan|samantha/i.test(v.name)) ||
+    candidateVoices[0];
   if (preferred) utt.voice = preferred;
 
   const span = document.getElementById(`span-${sentence.id}`);
@@ -2832,13 +3047,23 @@ function playViaAppleWebSpeech(sentence, index, myToken) {
     }
   };
 
-  utt.onerror = () => {
+  utt.onerror = (e) => {
+    console.warn("speechSynthesis utterance error:", e);
     if (state.isPlaying && state.playToken === myToken) {
       playSentenceAt(index + 1);
     }
   };
 
-  window.speechSynthesis.speak(utt);
+  setTimeout(() => {
+    try {
+      window.speechSynthesis.speak(utt);
+    } catch (e) {
+      console.warn("speechSynthesis.speak failed:", e);
+      if (state.isPlaying && state.playToken === myToken) {
+        setTimeout(() => playSentenceAt(index + 1), 600);
+      }
+    }
+  }, 10);
 }
 
 function drawAcousticRibbon() {
