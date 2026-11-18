@@ -8,8 +8,9 @@
   <meta name="apple-mobile-web-app-title" content="KaizenReader" />
   <meta name="theme-color" content="#12100e" />
   <title>KaizenReader — Atelier &amp; Acoustic Chronograph</title>
-  <link rel="manifest" href="manifest.webmanifest" />
-  <link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512'%3E%3Crect width='512' height='512' rx='112' fill='%2312100e'/%3E%3Ccircle cx='256' cy='256' r='164' fill='none' stroke='%23e5a93c' stroke-width='6' stroke-dasharray='8 12'/%3E%3Cpath d='M168 164v184M168 256l112-92M216 216l88 132' stroke='%23fbf7ee' stroke-width='28' stroke-linecap='round' stroke-linejoin='round' fill='none'/%3E%3Ccircle cx='344' cy='182' r='20' fill='%23e5a93c'/%3E%3C/svg%3E" />
+  <link rel="manifest" href="/manifest.webmanifest" />
+  <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
+  <link rel="icon" type="image/png" sizes="180x180" href="/apple-touch-icon.png" />
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
@@ -306,6 +307,43 @@
             <button id="export-kzn-btn" class="icon-btn">⬇ Export .kzn</button>
             <button id="push-gdrive-kzn-btn" class="icon-btn">☁⬆ Push .kzn to Drive</button>
             <button id="import-kzn-btn" class="icon-btn">⬆ Import .kzn / Book</button>
+          </div>
+        </div>
+
+        <!-- 5. iPhone Standalone Home Screen & Local HTTPS Trust -->
+        <div class="atelier-section ios-pwa-box">
+          <div class="atelier-section-top">
+            <span class="atelier-section-label">5. iPhone Standalone App &amp; HTTPS Setup</span>
+            <span id="ios-standalone-badge" class="atelier-telemetry-tag">Browser Mode</span>
+          </div>
+          <p class="atelier-helper-text">
+            If opening from the Home Screen shows <em>"Safari cannot open the page because it couldn't connect to the server"</em>, enable Full Trust for the local certificate in iOS Settings:
+          </p>
+          <div class="ios-install-steps">
+            <div class="ios-step-item">
+              <span class="ios-step-num">1</span>
+              <div>
+                <strong>Download Profile:</strong> Tap <a href="/api/trust-profile" class="inline-cert-link">🔒 Download Local CA Profile</a>, then tap <em>Allow</em>.
+              </div>
+            </div>
+            <div class="ios-step-item">
+              <span class="ios-step-num">2</span>
+              <div>
+                <strong>Install in Settings:</strong> Open iPhone <strong>Settings → Profile Downloaded → Install</strong> (enter passcode).
+              </div>
+            </div>
+            <div class="ios-step-item">
+              <span class="ios-step-num">3</span>
+              <div>
+                <strong>Enable Full Trust (Crucial):</strong> Open <strong>Settings → General → About → Certificate Trust Settings</strong>. Under <em>Enable full trust for root certificates</em>, toggle <strong>KaizenReader Local Root CA</strong> to <strong>ON</strong> (green).
+              </div>
+            </div>
+            <div class="ios-step-item">
+              <span class="ios-step-num">4</span>
+              <div>
+                <strong>Add to Home Screen:</strong> In Safari, tap <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:middle;"><path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8"/><polyline points="16 6 12 2 8 6"/><line x1="12" y1="2" x2="12" y2="15"/></svg> <strong>Share → Add to Home Screen</strong>.
+              </div>
+            </div>
           </div>
         </div>
       </div>
@@ -613,9 +651,10 @@
               <span class="drawer-vault-title">iPhone Offline Vault</span>
               <span id="drawer-vault-stat" class="library-count-badge">0 sprites</span>
             </div>
-            <div style="display:flex; gap:0.4rem; margin-top:0.4rem;">
+            <div style="display:flex; gap:0.4rem; margin-top:0.4rem; flex-wrap:wrap;">
               <button id="drawer-pack-ch-btn" class="action-btn-primary" style="flex:1; font-size:0.74rem;">⚡ Pack Ch (.m4a)</button>
-              <button id="drawer-open-atelier-btn" class="icon-btn" style="font-size:0.74rem;">🎛 Console</button>
+              <button id="drawer-open-atelier-btn" class="icon-btn" style="flex:1; font-size:0.74rem;">🎛 Console</button>
+              <a href="/api/trust-profile" class="icon-btn" style="flex:1; font-size:0.72rem; text-decoration:none; text-align:center; display:flex; align-items:center; justify-content:center; gap:0.2rem;" title="Download Root CA Certificate for iPhone HTTPS"><span>🔒</span><span>iOS Cert</span></a>
             </div>
           </div>
 

@@ -3442,6 +3442,19 @@ function setupAtelierExtensions() {
     window.KaizenVault.requestPersistentStorage().then(() => refreshVaultTelemetryUI());
   }
 
+  const standaloneBadge = document.getElementById("ios-standalone-badge");
+  const isStandalone = window.navigator.standalone === true || window.matchMedia("(display-mode: standalone)").matches;
+  if (standaloneBadge) {
+    if (isStandalone) {
+      standaloneBadge.textContent = "⚡ Standalone PWA (Active)";
+      standaloneBadge.style.color = "#10b981";
+      standaloneBadge.style.borderColor = "rgba(16, 185, 129, 0.4)";
+      standaloneBadge.style.background = "rgba(16, 185, 129, 0.1)";
+    } else {
+      standaloneBadge.textContent = "Safari Tab";
+    }
+  }
+
   const sheet = document.getElementById("atelier-console-sheet");
   const backdrop = document.getElementById("atelier-sheet-backdrop");
   const openSheet = () => {

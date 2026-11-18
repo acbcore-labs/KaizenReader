@@ -2221,3 +2221,51 @@ select.app-select {
     grid-template-columns: repeat(2, 1fr);
   }
 }
+
+/* ==========================================================================
+   iOS PWA Standalone & Local HTTPS Certificate Setup
+   ========================================================================== */
+.ios-pwa-box {
+  background: rgba(229, 169, 60, 0.05);
+  border: 1px solid rgba(229, 169, 60, 0.25);
+  border-radius: 8px;
+  padding: 0.85rem;
+  margin-top: 0.75rem;
+}
+
+.ios-install-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+  margin-top: 0.65rem;
+  font-size: 0.82rem;
+}
+
+.ios-step-item {
+  display: flex;
+  gap: 0.65rem;
+  align-items: flex-start;
+  line-height: 1.4;
+}
+
+.ios-step-num {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--accent-color);
+  color: #12100e;
+  font-weight: 700;
+  font-size: 0.72rem;
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
+.inline-cert-link {
+  color: var(--accent-color);
+  font-weight: 600;
+  text-decoration: underline;
+}
+

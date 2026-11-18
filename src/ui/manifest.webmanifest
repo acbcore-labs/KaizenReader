@@ -11,9 +11,15 @@
   "categories": ["books", "education", "productivity"],
   "icons": [
     {
-      "src": "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512'%3E%3Crect width='512' height='512' rx='112' fill='%2312100e'/%3E%3Crect x='28' y='28' width='456' height='456' rx='92' fill='none' stroke='%23e5a93c' stroke-width='4' stroke-opacity='0.45'/%3E%3Ccircle cx='256' cy='256' r='156' fill='none' stroke='%23e5a93c' stroke-width='3' stroke-dasharray='6 10'/%3E%3Cpath d='M168 164v184M168 256l112-92M216 216l88 132' stroke='%23fbf7ee' stroke-width='26' stroke-linecap='round' stroke-linejoin='round' fill='none'/%3E%3Ccircle cx='344' cy='182' r='18' fill='%23e5a93c'/%3E%3Cpath d='M324 256h48M336 226v60M360 238v36' stroke='%23e5a93c' stroke-width='12' stroke-linecap='round'/%3E%3C/svg%3E",
+      "src": "/apple-touch-icon.png",
+      "sizes": "180x180",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/icon-512.png",
       "sizes": "512x512",
-      "type": "image/svg+xml",
+      "type": "image/png",
       "purpose": "any maskable"
     }
   ]
